@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import random
+import time
 from typing import Any
 
 import torch
@@ -60,6 +61,12 @@ class FFDiscriminativeTrainer:
         max_answer_value: int | None = None,
         max_full_candidate_answers: int = 2048,
         candidate_answers: list[int] | None = None,
+        eval_every: int | None = None,
+        eval_train_max_samples: int | None = None,
+        eval_test_max_samples: int | None = None,
+        enable_goodness_eval: bool = True,
+        enable_logit_rank_diagnostics: bool = False,
+        logit_rank_eval_max_candidates: int = 512,
         near_miss_start_step: int | None = None,
         near_miss_offsets: tuple[int, ...] = (1,),
         device: str = "cpu",
@@ -96,6 +103,12 @@ class FFDiscriminativeTrainer:
         inferred_max_answer_value = max((problem.answer for problem in all_problems), default=ANSWER_MAX)
         self.max_answer_value = int(max_answer_value) if max_answer_value is not None else inferred_max_answer_value
         self.max_full_candidate_answers = int(max_full_candidate_answers)
+        self.eval_every = int(eval_every) if eval_every is not None else None
+        self.eval_train_max_samples = int(eval_train_max_samples) if eval_train_max_samples is not None else None
+        self.eval_test_max_samples = int(eval_test_max_samples) if eval_test_max_samples is not None else None
+        self.enable_goodness_eval = bool(enable_goodness_eval)
+        self.enable_logit_rank_diagnostics = bool(enable_logit_rank_diagnostics)
+        self.logit_rank_eval_max_candidates = int(logit_rank_eval_max_candidates)
 
         if candidate_answers is not None:
             cands = sorted(set(int(x) for x in candidate_answers if ANSWER_MIN <= int(x) <= self.max_answer_value))
@@ -136,6 +149,8 @@ class FFDiscriminativeTrainer:
             "test_logit_sequence_exact_match": [],
             "train_logit_mean_correct_rank": [],
             "test_logit_mean_correct_rank": [],
+            "eval_train_size": [],
+            "eval_test_size": [],
             "logit_aux_loss": [],
             "block_g_pos": [[] for _ in range(n_blocks)],
             "block_g_neg": [[] for _ in range(n_blocks)],
@@ -152,6 +167,14 @@ class FFDiscriminativeTrainer:
 
     def _sample_problem_batch(self) -> list[Problem]:
         return [self.rng.choice(self.train_problems) for _ in range(self.batch_size)]
+
+    def _sample_eval_subset(self, problems: list[Problem], max_samples: int | None) -> list[Problem]:
+        if max_samples is None or max_samples >= len(problems):
+            return problems
+        if max_samples <= 0:
+            return []
+        indices = self.rng.sample(range(len(problems)), max_samples)
+        return [problems[idx] for idx in indices]
 
     def _build_discriminative_batch(self, problems: list[Problem], strategy: str) -> tuple[torch.Tensor, torch.Tensor]:
         pos: list[list[int]] = []
@@ -267,10 +290,31 @@ class FFDiscriminativeTrainer:
 
     @torch.no_grad()
     def predict_with_logits(self, a: int, b: int) -> tuple[int | None, list[int]]:
-        scores = self._score_candidates_logits(a=a, b=b)
-        pred_idx = int(torch.argmax(scores).item())
-        pred_answer = int(self.candidate_answers[pred_idx])
-        return pred_answer, self._target_tokens(pred_answer)
+        context = self._prompt_token_ids(a, b)
+        generated: list[int] = []
+
+        for _ in range(self.max_answer_tokens):
+            input_ids = torch.tensor([context], dtype=torch.long, device=self.device)
+            pad_mask = input_ids != self.vocab.pad_id
+            block_outputs, _ = self.model(input_ids, pad_mask=pad_mask, causal=True, detach_between_blocks=True)
+            hidden = block_outputs[-1][0, -1]
+            logits = torch.matmul(hidden, self.model.embedding_weight.detach().T)
+            next_token = int(torch.argmax(logits).item())
+            generated.append(next_token)
+            context.append(next_token)
+            if next_token == self.vocab.pad_id:
+                break
+
+        if len(generated) < self.max_answer_tokens:
+            generated.extend([self.vocab.pad_id] * (self.max_answer_tokens - len(generated)))
+
+        pred_answer, normalized_tokens = parse_answer_tokens_variable(
+            generated[: self.max_answer_tokens],
+            self.vocab,
+            expected_length=self.max_answer_tokens,
+            max_answer_value=self.max_answer_value,
+        )
+        return pred_answer, normalized_tokens
 
     @torch.no_grad()
     def evaluate_goodness(self, problems: list[Problem], causal: bool = False) -> FFGoodnessEvalResult:
@@ -342,8 +386,21 @@ class FFDiscriminativeTrainer:
         top_k: int = 5,
         collect_examples: bool = True,
         max_examples: int = 20,
+        max_candidates: int | None = None,
     ) -> dict[str, Any]:
         candidates = self.candidate_answers
+        if max_candidates is not None and len(candidates) > max_candidates:
+            coarse = self.evaluate_logits(problems)
+            return {
+                "sequence_exact_match": coarse.sequence_exact_match,
+                "mean_correct_rank": float("nan"),
+                "per_sum_accuracy": {},
+                "examples": [],
+                "skipped": True,
+                "candidate_count": len(candidates),
+                "max_candidates": int(max_candidates),
+            }
+
         per_sum: dict[int, dict[str, int]] = {}
         correct_ranks: list[int] = []
         examples: list[dict[str, Any]] = []
@@ -422,6 +479,12 @@ class FFDiscriminativeTrainer:
             "max_answer_value": self.max_answer_value,
             "candidate_answers": self.candidate_answers,
             "max_full_candidate_answers": self.max_full_candidate_answers,
+            "eval_every": self.eval_every,
+            "eval_train_max_samples": self.eval_train_max_samples,
+            "eval_test_max_samples": self.eval_test_max_samples,
+            "enable_goodness_eval": self.enable_goodness_eval,
+            "enable_logit_rank_diagnostics": self.enable_logit_rank_diagnostics,
+            "logit_rank_eval_max_candidates": self.logit_rank_eval_max_candidates,
             "rng_states": capture_rng_states(),
         }
         path = self.checkpoint_dir / f"{self.checkpoint_prefix}_step{step}.pt"
@@ -429,6 +492,7 @@ class FFDiscriminativeTrainer:
 
     def train(self, log_every: int = 100) -> dict[str, Any]:
         self.model.train()
+        start_time = time.perf_counter()
 
         for step in range(1, self.num_steps + 1):
             strategy = self._negative_strategy_for_step(step)
@@ -545,34 +609,14 @@ class FFDiscriminativeTrainer:
             self.embedding_optimizer.step()
 
             if step % log_every == 0 or step == 1 or step == self.num_steps:
-                train_good = self.evaluate_goodness(self.train_problems, causal=False)
-                test_good = self.evaluate_goodness(self.test_problems, causal=False)
-                train_log = self.evaluate_logits(self.train_problems)
-                test_log = self.evaluate_logits(self.test_problems)
-                train_log_detail = self.evaluate_logits_detailed(
-                    self.train_problems,
-                    top_k=3,
-                    collect_examples=False,
+                should_eval = (
+                    self.eval_every is None
+                    or step == 1
+                    or step == self.num_steps
+                    or step % self.eval_every == 0
                 )
-                test_log_detail = self.evaluate_logits_detailed(
-                    self.test_problems,
-                    top_k=3,
-                    collect_examples=False,
-                )
-
-                self.history["step"].append(step)
-                self.history["loss"].append(float(total_loss.item()))
-                self.history["logit_aux_loss"].append(float(logit_aux_loss.item()))
-                self.history["train_token_accuracy"].append(train_good.token_accuracy)
-                self.history["test_token_accuracy"].append(test_good.token_accuracy)
-                self.history["train_sequence_exact_match"].append(train_good.sequence_exact_match)
-                self.history["test_sequence_exact_match"].append(test_good.sequence_exact_match)
-                self.history["train_candidate_ranking_accuracy"].append(train_good.candidate_ranking_accuracy)
-                self.history["test_candidate_ranking_accuracy"].append(test_good.candidate_ranking_accuracy)
-                self.history["train_logit_sequence_exact_match"].append(train_log.sequence_exact_match)
-                self.history["test_logit_sequence_exact_match"].append(test_log.sequence_exact_match)
-                self.history["train_logit_mean_correct_rank"].append(float(train_log_detail["mean_correct_rank"]))
-                self.history["test_logit_mean_correct_rank"].append(float(test_log_detail["mean_correct_rank"]))
+                elapsed = max(time.perf_counter() - start_time, 1e-8)
+                steps_per_sec = step / elapsed
 
                 block_msg = " ".join(
                     [
@@ -583,16 +627,88 @@ class FFDiscriminativeTrainer:
                         for idx, stats in enumerate(block_stats)
                     ]
                 )
-                print(
-                    f"[ff-disc step {step}] loss={total_loss.item():.4f} "
-                    f"ff_loss={ff_loss_total.item():.4f} "
-                    f"logit_aux={logit_aux_loss.item():.4f} "
-                    f"train_exact={train_good.sequence_exact_match:.3f} "
-                    f"test_exact={test_good.sequence_exact_match:.3f} "
-                    f"train_rank={train_good.candidate_ranking_accuracy:.3f} "
-                    f"test_rank={test_good.candidate_ranking_accuracy:.3f} "
-                    f"logit_test_rank={float(test_log_detail['mean_correct_rank']):.2f} {block_msg}"
-                )
+
+                if not should_eval:
+                    print(
+                        f"[ff-disc step {step}] loss={total_loss.item():.4f} "
+                        f"ff_loss={ff_loss_total.item():.4f} "
+                        f"logit_aux={logit_aux_loss.item():.4f} "
+                        f"steps_per_sec={steps_per_sec:.2f} "
+                        f"(eval skipped) {block_msg}"
+                    )
+                else:
+                    train_eval = self._sample_eval_subset(self.train_problems, self.eval_train_max_samples)
+                    test_eval = self._sample_eval_subset(self.test_problems, self.eval_test_max_samples)
+
+                    if self.enable_goodness_eval:
+                        train_good = self.evaluate_goodness(train_eval, causal=False)
+                        test_good = self.evaluate_goodness(test_eval, causal=False)
+                    else:
+                        train_good = FFGoodnessEvalResult(
+                            token_accuracy=float("nan"),
+                            sequence_exact_match=float("nan"),
+                            candidate_ranking_accuracy=float("nan"),
+                            block_candidate_accuracy=[float("nan")] * len(self.model.blocks),
+                            predictions=[],
+                            targets=[],
+                        )
+                        test_good = FFGoodnessEvalResult(
+                            token_accuracy=float("nan"),
+                            sequence_exact_match=float("nan"),
+                            candidate_ranking_accuracy=float("nan"),
+                            block_candidate_accuracy=[float("nan")] * len(self.model.blocks),
+                            predictions=[],
+                            targets=[],
+                        )
+                    train_log = self.evaluate_logits(train_eval)
+                    test_log = self.evaluate_logits(test_eval)
+                    if self.enable_logit_rank_diagnostics:
+                        train_log_detail = self.evaluate_logits_detailed(
+                            train_eval,
+                            top_k=3,
+                            collect_examples=False,
+                            max_candidates=self.logit_rank_eval_max_candidates,
+                        )
+                        test_log_detail = self.evaluate_logits_detailed(
+                            test_eval,
+                            top_k=3,
+                            collect_examples=False,
+                            max_candidates=self.logit_rank_eval_max_candidates,
+                        )
+                        train_log_rank = float(train_log_detail["mean_correct_rank"])
+                        test_log_rank = float(test_log_detail["mean_correct_rank"])
+                    else:
+                        train_log_rank = float("nan")
+                        test_log_rank = float("nan")
+
+                    self.history["step"].append(step)
+                    self.history["loss"].append(float(total_loss.item()))
+                    self.history["logit_aux_loss"].append(float(logit_aux_loss.item()))
+                    self.history["train_token_accuracy"].append(train_good.token_accuracy)
+                    self.history["test_token_accuracy"].append(test_good.token_accuracy)
+                    self.history["train_sequence_exact_match"].append(train_good.sequence_exact_match)
+                    self.history["test_sequence_exact_match"].append(test_good.sequence_exact_match)
+                    self.history["train_candidate_ranking_accuracy"].append(train_good.candidate_ranking_accuracy)
+                    self.history["test_candidate_ranking_accuracy"].append(test_good.candidate_ranking_accuracy)
+                    self.history["train_logit_sequence_exact_match"].append(train_log.sequence_exact_match)
+                    self.history["test_logit_sequence_exact_match"].append(test_log.sequence_exact_match)
+                    self.history["train_logit_mean_correct_rank"].append(train_log_rank)
+                    self.history["test_logit_mean_correct_rank"].append(test_log_rank)
+                    self.history["eval_train_size"].append(len(train_eval))
+                    self.history["eval_test_size"].append(len(test_eval))
+
+                    print(
+                        f"[ff-disc step {step}] loss={total_loss.item():.4f} "
+                        f"ff_loss={ff_loss_total.item():.4f} "
+                        f"logit_aux={logit_aux_loss.item():.4f} "
+                        f"steps_per_sec={steps_per_sec:.2f} "
+                        f"train_logit_exact={train_log.sequence_exact_match:.3f} "
+                        f"test_logit_exact={test_log.sequence_exact_match:.3f} "
+                        f"train_good_rank={train_good.candidate_ranking_accuracy:.3f} "
+                        f"test_good_rank={test_good.candidate_ranking_accuracy:.3f} "
+                        f"logit_test_rank={test_log_rank:.2f} "
+                        f"eval_train={len(train_eval)} eval_test={len(test_eval)} {block_msg}"
+                    )
 
             if step % self.checkpoint_every == 0:
                 ckpt_path = self._save_checkpoint(step)
@@ -601,10 +717,30 @@ class FFDiscriminativeTrainer:
         final_ckpt = self._save_checkpoint(self.num_steps)
         print(f"Saved final checkpoint: {final_ckpt}")
 
-        final_train_good = self.evaluate_goodness(self.train_problems, causal=False)
-        final_test_good = self.evaluate_goodness(self.test_problems, causal=False)
-        final_train_log = self.evaluate_logits(self.train_problems)
-        final_test_log = self.evaluate_logits(self.test_problems)
+        final_train_eval = self._sample_eval_subset(self.train_problems, self.eval_train_max_samples)
+        final_test_eval = self._sample_eval_subset(self.test_problems, self.eval_test_max_samples)
+        if self.enable_goodness_eval:
+            final_train_good = self.evaluate_goodness(final_train_eval, causal=False)
+            final_test_good = self.evaluate_goodness(final_test_eval, causal=False)
+        else:
+            final_train_good = FFGoodnessEvalResult(
+                token_accuracy=float("nan"),
+                sequence_exact_match=float("nan"),
+                candidate_ranking_accuracy=float("nan"),
+                block_candidate_accuracy=[float("nan")] * len(self.model.blocks),
+                predictions=[],
+                targets=[],
+            )
+            final_test_good = FFGoodnessEvalResult(
+                token_accuracy=float("nan"),
+                sequence_exact_match=float("nan"),
+                candidate_ranking_accuracy=float("nan"),
+                block_candidate_accuracy=[float("nan")] * len(self.model.blocks),
+                predictions=[],
+                targets=[],
+            )
+        final_train_log = self.evaluate_logits(final_train_eval)
+        final_test_log = self.evaluate_logits(final_test_eval)
 
         return {
             "train_goodness": final_train_good,
@@ -638,6 +774,10 @@ class FFAutoregressiveTrainer:
         max_answer_value: int | None = None,
         max_full_candidate_answers: int = 2048,
         candidate_answers: list[int] | None = None,
+        eval_every: int | None = None,
+        eval_train_max_samples: int | None = None,
+        eval_test_max_samples: int | None = None,
+        enable_goodness_eval: bool = True,
         device: str = "cpu",
         seed: int = 42,
         run_tag: str | None = None,
@@ -673,6 +813,10 @@ class FFAutoregressiveTrainer:
         inferred_max_answer_value = max((problem.answer for problem in all_problems), default=ANSWER_MAX)
         self.max_answer_value = int(max_answer_value) if max_answer_value is not None else inferred_max_answer_value
         self.max_full_candidate_answers = int(max_full_candidate_answers)
+        self.eval_every = int(eval_every) if eval_every is not None else None
+        self.eval_train_max_samples = int(eval_train_max_samples) if eval_train_max_samples is not None else None
+        self.eval_test_max_samples = int(eval_test_max_samples) if eval_test_max_samples is not None else None
+        self.enable_goodness_eval = bool(enable_goodness_eval)
 
         if candidate_answers is not None:
             cands = sorted(set(int(x) for x in candidate_answers if ANSWER_MIN <= int(x) <= self.max_answer_value))
@@ -713,6 +857,8 @@ class FFAutoregressiveTrainer:
             "test_sequence_exact_match": [],
             "train_goodness_candidate_accuracy": [],
             "test_goodness_candidate_accuracy": [],
+            "eval_train_size": [],
+            "eval_test_size": [],
             "block_g_pos": [[] for _ in range(n_blocks)],
             "block_g_neg": [[] for _ in range(n_blocks)],
             "block_threshold": [[] for _ in range(n_blocks)],
@@ -723,6 +869,14 @@ class FFAutoregressiveTrainer:
 
     def _sample_problem_batch(self) -> list[Problem]:
         return [self.rng.choice(self.train_problems) for _ in range(self.batch_size)]
+
+    def _sample_eval_subset(self, problems: list[Problem], max_samples: int | None) -> list[Problem]:
+        if max_samples is None or max_samples >= len(problems):
+            return problems
+        if max_samples <= 0:
+            return []
+        indices = self.rng.sample(range(len(problems)), max_samples)
+        return [problems[idx] for idx in indices]
 
     def _build_autoregressive_batch(self, problems: list[Problem]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         full = torch.tensor(
@@ -928,6 +1082,10 @@ class FFAutoregressiveTrainer:
             "max_answer_value": self.max_answer_value,
             "candidate_answers": self.candidate_answers,
             "max_full_candidate_answers": self.max_full_candidate_answers,
+            "eval_every": self.eval_every,
+            "eval_train_max_samples": self.eval_train_max_samples,
+            "eval_test_max_samples": self.eval_test_max_samples,
+            "enable_goodness_eval": self.enable_goodness_eval,
             "rng_states": capture_rng_states(),
         }
         path = self.checkpoint_dir / f"{self.checkpoint_prefix}_step{step}.pt"
@@ -935,6 +1093,7 @@ class FFAutoregressiveTrainer:
 
     def train(self, log_every: int = 100) -> dict[str, Any]:
         self.model.train()
+        start_time = time.perf_counter()
 
         for step in range(1, self.num_steps + 1):
             batch_problems = self._sample_problem_batch()
@@ -1051,22 +1210,14 @@ class FFAutoregressiveTrainer:
             self.embedding_optimizer.step()
 
             if step % log_every == 0 or step == 1 or step == self.num_steps:
-                train_logits = self.evaluate_logits(self.train_problems)
-                test_logits = self.evaluate_logits(self.test_problems)
-                train_good = self.evaluate_goodness(self.train_problems)
-                test_good = self.evaluate_goodness(self.test_problems)
-
-                self.history["step"].append(step)
-                self.history["loss"].append(float(total_loss.item()))
-                self.history["candidate_loss"].append(float(candidate_loss_total.item()))
-                self.history["goodness_aux_loss"].append(float(goodness_aux_loss_total.item()))
-                self.history["temperature"].append(float(self.temperature))
-                self.history["train_token_accuracy"].append(train_logits.token_accuracy)
-                self.history["test_token_accuracy"].append(test_logits.token_accuracy)
-                self.history["train_sequence_exact_match"].append(train_logits.sequence_exact_match)
-                self.history["test_sequence_exact_match"].append(test_logits.sequence_exact_match)
-                self.history["train_goodness_candidate_accuracy"].append(train_good.candidate_ranking_accuracy)
-                self.history["test_goodness_candidate_accuracy"].append(test_good.candidate_ranking_accuracy)
+                should_eval = (
+                    self.eval_every is None
+                    or step == 1
+                    or step == self.num_steps
+                    or step % self.eval_every == 0
+                )
+                elapsed = max(time.perf_counter() - start_time, 1e-8)
+                steps_per_sec = step / elapsed
 
                 block_msg = " ".join(
                     [
@@ -1077,15 +1228,66 @@ class FFAutoregressiveTrainer:
                         for idx, stats in enumerate(block_stats)
                     ]
                 )
-                print(
-                    f"[ff-ar step {step}] loss={total_loss.item():.4f} temp={self.temperature:.3f} "
-                    f"cand={candidate_loss_total.item():.4f} "
-                    f"good_aux={goodness_aux_loss_total.item():.4f} "
-                    f"train_exact={train_logits.sequence_exact_match:.3f} "
-                    f"test_exact={test_logits.sequence_exact_match:.3f} "
-                    f"train_good_rank={train_good.candidate_ranking_accuracy:.3f} "
-                    f"test_good_rank={test_good.candidate_ranking_accuracy:.3f} {block_msg}"
-                )
+
+                if not should_eval:
+                    print(
+                        f"[ff-ar step {step}] loss={total_loss.item():.4f} temp={self.temperature:.3f} "
+                        f"cand={candidate_loss_total.item():.4f} "
+                        f"good_aux={goodness_aux_loss_total.item():.4f} "
+                        f"steps_per_sec={steps_per_sec:.2f} "
+                        f"(eval skipped) {block_msg}"
+                    )
+                else:
+                    train_eval = self._sample_eval_subset(self.train_problems, self.eval_train_max_samples)
+                    test_eval = self._sample_eval_subset(self.test_problems, self.eval_test_max_samples)
+                    train_logits = self.evaluate_logits(train_eval)
+                    test_logits = self.evaluate_logits(test_eval)
+                    if self.enable_goodness_eval:
+                        train_good = self.evaluate_goodness(train_eval)
+                        test_good = self.evaluate_goodness(test_eval)
+                    else:
+                        train_good = FFGoodnessEvalResult(
+                            token_accuracy=float("nan"),
+                            sequence_exact_match=float("nan"),
+                            candidate_ranking_accuracy=float("nan"),
+                            block_candidate_accuracy=[float("nan")] * len(self.model.blocks),
+                            predictions=[],
+                            targets=[],
+                        )
+                        test_good = FFGoodnessEvalResult(
+                            token_accuracy=float("nan"),
+                            sequence_exact_match=float("nan"),
+                            candidate_ranking_accuracy=float("nan"),
+                            block_candidate_accuracy=[float("nan")] * len(self.model.blocks),
+                            predictions=[],
+                            targets=[],
+                        )
+
+                    self.history["step"].append(step)
+                    self.history["loss"].append(float(total_loss.item()))
+                    self.history["candidate_loss"].append(float(candidate_loss_total.item()))
+                    self.history["goodness_aux_loss"].append(float(goodness_aux_loss_total.item()))
+                    self.history["temperature"].append(float(self.temperature))
+                    self.history["train_token_accuracy"].append(train_logits.token_accuracy)
+                    self.history["test_token_accuracy"].append(test_logits.token_accuracy)
+                    self.history["train_sequence_exact_match"].append(train_logits.sequence_exact_match)
+                    self.history["test_sequence_exact_match"].append(test_logits.sequence_exact_match)
+                    self.history["train_goodness_candidate_accuracy"].append(train_good.candidate_ranking_accuracy)
+                    self.history["test_goodness_candidate_accuracy"].append(test_good.candidate_ranking_accuracy)
+                    self.history["eval_train_size"].append(len(train_eval))
+                    self.history["eval_test_size"].append(len(test_eval))
+
+                    print(
+                        f"[ff-ar step {step}] loss={total_loss.item():.4f} temp={self.temperature:.3f} "
+                        f"cand={candidate_loss_total.item():.4f} "
+                        f"good_aux={goodness_aux_loss_total.item():.4f} "
+                        f"steps_per_sec={steps_per_sec:.2f} "
+                        f"train_exact={train_logits.sequence_exact_match:.3f} "
+                        f"test_exact={test_logits.sequence_exact_match:.3f} "
+                        f"train_good_rank={train_good.candidate_ranking_accuracy:.3f} "
+                        f"test_good_rank={test_good.candidate_ranking_accuracy:.3f} "
+                        f"eval_train={len(train_eval)} eval_test={len(test_eval)} {block_msg}"
+                    )
 
             if step % self.checkpoint_every == 0:
                 path = self._save_checkpoint(step)
@@ -1094,10 +1296,30 @@ class FFAutoregressiveTrainer:
         final_path = self._save_checkpoint(self.num_steps)
         print(f"Saved final checkpoint: {final_path}")
 
-        final_train_logits = self.evaluate_logits(self.train_problems)
-        final_test_logits = self.evaluate_logits(self.test_problems)
-        final_train_good = self.evaluate_goodness(self.train_problems)
-        final_test_good = self.evaluate_goodness(self.test_problems)
+        final_train_eval = self._sample_eval_subset(self.train_problems, self.eval_train_max_samples)
+        final_test_eval = self._sample_eval_subset(self.test_problems, self.eval_test_max_samples)
+        final_train_logits = self.evaluate_logits(final_train_eval)
+        final_test_logits = self.evaluate_logits(final_test_eval)
+        if self.enable_goodness_eval:
+            final_train_good = self.evaluate_goodness(final_train_eval)
+            final_test_good = self.evaluate_goodness(final_test_eval)
+        else:
+            final_train_good = FFGoodnessEvalResult(
+                token_accuracy=float("nan"),
+                sequence_exact_match=float("nan"),
+                candidate_ranking_accuracy=float("nan"),
+                block_candidate_accuracy=[float("nan")] * len(self.model.blocks),
+                predictions=[],
+                targets=[],
+            )
+            final_test_good = FFGoodnessEvalResult(
+                token_accuracy=float("nan"),
+                sequence_exact_match=float("nan"),
+                candidate_ranking_accuracy=float("nan"),
+                block_candidate_accuracy=[float("nan")] * len(self.model.blocks),
+                predictions=[],
+                targets=[],
+            )
 
         return {
             "train_logits": final_train_logits,

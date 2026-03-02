@@ -46,6 +46,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--test-size", type=int, default=20)
     parser.add_argument("--run-tag", type=str, default=None, help="Checkpoint run tag (defaults to split-based tag)")
+    parser.add_argument("--eval-train-max-samples", type=int, default=None)
+    parser.add_argument("--eval-test-max-samples", type=int, default=None)
+    parser.add_argument("--skip-goodness-eval", action="store_true")
+    parser.add_argument("--logit-rank-eval-max-candidates", type=int, default=512)
     return parser.parse_args()
 
 
@@ -136,6 +140,20 @@ def main() -> None:
         for idx, missing_tokens in enumerate(missing):
             print(f"  position_{idx}: {missing_tokens}")
 
+    def sample_subset(problems: list, max_samples: int | None, seed: int) -> list:
+        if max_samples is None or max_samples >= len(problems):
+            return problems
+        if max_samples <= 0:
+            return []
+        import random
+
+        rng = random.Random(seed)
+        indices = rng.sample(range(len(problems)), max_samples)
+        return [problems[idx] for idx in indices]
+
+    train_eval_problems = sample_subset(train_problems, args.eval_train_max_samples, args.split_seed + 101)
+    test_eval_problems = sample_subset(test_problems, args.eval_test_max_samples, args.split_seed + 202)
+
     baseline_ckpt_path = resolve_checkpoint_path(
         args.baseline_checkpoint,
         args.checkpoint_dir,
@@ -193,6 +211,12 @@ def main() -> None:
         max_answer_value=disc_ckpt.get("max_answer_value", max_answer_value),
         max_full_candidate_answers=disc_ckpt.get("max_full_candidate_answers", 2048),
         candidate_answers=disc_ckpt.get("candidate_answers"),
+        eval_every=disc_ckpt.get("eval_every"),
+        eval_train_max_samples=disc_ckpt.get("eval_train_max_samples"),
+        eval_test_max_samples=disc_ckpt.get("eval_test_max_samples"),
+        enable_goodness_eval=disc_ckpt.get("enable_goodness_eval", True),
+        enable_logit_rank_diagnostics=disc_ckpt.get("enable_logit_rank_diagnostics", False),
+        logit_rank_eval_max_candidates=disc_ckpt.get("logit_rank_eval_max_candidates", 512),
     )
     ar_trainer = FFAutoregressiveTrainer(
         model=ar_model,
@@ -207,36 +231,57 @@ def main() -> None:
         max_answer_value=ar_ckpt.get("max_answer_value", max_answer_value),
         max_full_candidate_answers=ar_ckpt.get("max_full_candidate_answers", 2048),
         candidate_answers=ar_ckpt.get("candidate_answers"),
+        eval_every=ar_ckpt.get("eval_every"),
+        eval_train_max_samples=ar_ckpt.get("eval_train_max_samples"),
+        eval_test_max_samples=ar_ckpt.get("eval_test_max_samples"),
+        enable_goodness_eval=ar_ckpt.get("enable_goodness_eval", True),
     )
 
-    baseline_train = baseline_trainer.evaluate(train_problems)
-    baseline_test = baseline_trainer.evaluate(test_problems)
+    baseline_train = baseline_trainer.evaluate(train_eval_problems)
+    baseline_test = baseline_trainer.evaluate(test_eval_problems)
 
-    disc_train_good = disc_trainer.evaluate_goodness(train_problems, causal=False)
-    disc_test_good = disc_trainer.evaluate_goodness(test_problems, causal=False)
-    disc_train_log = disc_trainer.evaluate_logits(train_problems)
-    disc_test_log = disc_trainer.evaluate_logits(test_problems)
+    if args.skip_goodness_eval:
+        disc_train_good = None
+        disc_test_good = None
+    else:
+        disc_train_good = disc_trainer.evaluate_goodness(train_eval_problems, causal=False)
+        disc_test_good = disc_trainer.evaluate_goodness(test_eval_problems, causal=False)
+    disc_train_log = disc_trainer.evaluate_logits(train_eval_problems)
+    disc_test_log = disc_trainer.evaluate_logits(test_eval_problems)
     disc_train_log_diag = disc_trainer.evaluate_logits_detailed(
-        train_problems,
+        train_eval_problems,
         top_k=5,
         collect_examples=False,
+        max_candidates=args.logit_rank_eval_max_candidates,
     )
     disc_test_log_diag = disc_trainer.evaluate_logits_detailed(
-        test_problems,
+        test_eval_problems,
         top_k=5,
         collect_examples=False,
+        max_candidates=args.logit_rank_eval_max_candidates,
     )
+    if bool(disc_train_log_diag.get("skipped", False)) or bool(disc_test_log_diag.get("skipped", False)):
+        print(
+            "[warn] discriminative logit rank diagnostics skipped because candidate pool exceeded "
+            f"--logit-rank-eval-max-candidates={args.logit_rank_eval_max_candidates}"
+        )
 
-    ar_train_logits = ar_trainer.evaluate_logits(train_problems)
-    ar_test_logits = ar_trainer.evaluate_logits(test_problems)
-    ar_train_good = ar_trainer.evaluate_goodness(train_problems)
-    ar_test_good = ar_trainer.evaluate_goodness(test_problems)
+    ar_train_logits = ar_trainer.evaluate_logits(train_eval_problems)
+    ar_test_logits = ar_trainer.evaluate_logits(test_eval_problems)
+    if args.skip_goodness_eval:
+        ar_train_good = None
+        ar_test_good = None
+    else:
+        ar_train_good = ar_trainer.evaluate_goodness(train_eval_problems)
+        ar_test_good = ar_trainer.evaluate_goodness(test_eval_problems)
 
     num_classes = max_answer_value + 1
     if num_classes <= 512:
+        disc_targets = disc_test_good.targets if disc_test_good is not None else disc_test_log.targets
+        disc_preds = disc_test_good.predictions if disc_test_good is not None else disc_test_log.predictions
         baseline_train_cm = compute_confusion_matrix(baseline_train.targets, baseline_train.predictions, num_classes=num_classes)
         baseline_test_cm = compute_confusion_matrix(baseline_test.targets, baseline_test.predictions, num_classes=num_classes)
-        disc_test_cm = compute_confusion_matrix(disc_test_good.targets, disc_test_good.predictions, num_classes=num_classes)
+        disc_test_cm = compute_confusion_matrix(disc_targets, disc_preds, num_classes=num_classes)
         ar_test_cm = compute_confusion_matrix(ar_test_logits.targets, ar_test_logits.predictions, num_classes=num_classes)
 
         plot_confusion_matrix(baseline_train_cm, out_dir / "baseline_train_confusion.png", "Baseline Train Confusion")
@@ -325,6 +370,8 @@ def main() -> None:
             "split_seed": args.split_seed,
             "train_size": len(train_problems),
             "test_size": len(test_problems),
+            "eval_train_size": len(train_eval_problems),
+            "eval_test_size": len(test_eval_problems),
             "missing_test_tokens_in_train_by_position": missing,
         },
         "checkpoints": {
@@ -340,25 +387,34 @@ def main() -> None:
             "test_sequence_exact_match": baseline_test.sequence_exact_match,
         },
         "discriminative": {
-            "goodness_train_token_accuracy": disc_train_good.token_accuracy,
-            "goodness_train_sequence_exact_match": disc_train_good.sequence_exact_match,
-            "goodness_train_candidate_ranking_accuracy": disc_train_good.candidate_ranking_accuracy,
-            "goodness_test_token_accuracy": disc_test_good.token_accuracy,
-            "goodness_test_sequence_exact_match": disc_test_good.sequence_exact_match,
-            "goodness_test_candidate_ranking_accuracy": disc_test_good.candidate_ranking_accuracy,
+            "goodness_train_token_accuracy": None if disc_train_good is None else disc_train_good.token_accuracy,
+            "goodness_train_sequence_exact_match": None if disc_train_good is None else disc_train_good.sequence_exact_match,
+            "goodness_train_candidate_ranking_accuracy": None
+            if disc_train_good is None
+            else disc_train_good.candidate_ranking_accuracy,
+            "goodness_test_token_accuracy": None if disc_test_good is None else disc_test_good.token_accuracy,
+            "goodness_test_sequence_exact_match": None if disc_test_good is None else disc_test_good.sequence_exact_match,
+            "goodness_test_candidate_ranking_accuracy": None
+            if disc_test_good is None
+            else disc_test_good.candidate_ranking_accuracy,
             "logit_train_sequence_exact_match": disc_train_log.sequence_exact_match,
             "logit_test_sequence_exact_match": disc_test_log.sequence_exact_match,
             "logit_train_mean_correct_rank": disc_train_log_diag["mean_correct_rank"],
             "logit_test_mean_correct_rank": disc_test_log_diag["mean_correct_rank"],
             "logit_test_per_sum_accuracy": disc_test_log_diag["per_sum_accuracy"],
+            "logit_rank_diagnostics_skipped": bool(disc_test_log_diag.get("skipped", False)),
         },
         "autoregressive": {
             "logit_train_token_accuracy": ar_train_logits.token_accuracy,
             "logit_train_sequence_exact_match": ar_train_logits.sequence_exact_match,
             "logit_test_token_accuracy": ar_test_logits.token_accuracy,
             "logit_test_sequence_exact_match": ar_test_logits.sequence_exact_match,
-            "goodness_train_candidate_ranking_accuracy": ar_train_good.candidate_ranking_accuracy,
-            "goodness_test_candidate_ranking_accuracy": ar_test_good.candidate_ranking_accuracy,
+            "goodness_train_candidate_ranking_accuracy": None
+            if ar_train_good is None
+            else ar_train_good.candidate_ranking_accuracy,
+            "goodness_test_candidate_ranking_accuracy": None
+            if ar_test_good is None
+            else ar_test_good.candidate_ranking_accuracy,
         },
         "artifacts_dir": str(out_dir),
     }

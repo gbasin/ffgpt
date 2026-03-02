@@ -77,3 +77,13 @@
   - discriminative 1-digit (`steps=5`) executes end-to-end and saves checkpoint.
   - autoregressive 1-digit (`steps=5`) executes end-to-end and saves checkpoint.
 - Multi-digit pilots are now unblocked.
+
+### Entry 11
+- Added scalability instrumentation for multi-digit runs:
+  - `train_baseline.py` now supports `--operand-digits`, `--samples`, and dynamic sequence/answer sizing.
+  - FF trainers now support `--eval-every`, `--eval-train-max-samples`, `--eval-test-max-samples`.
+  - Added `--skip-goodness-eval` for FF runs to avoid expensive candidate scoring when scaling digits.
+  - Added optional discriminative rank diagnostics toggle (`--enable-logit-rank-diagnostics`, off by default).
+- Switched discriminative default logit inference from candidate enumeration to greedy decoding for speed.
+- Added throughput logging (`steps_per_sec`) and eval subset sizes in FF logs.
+- Validated 2-digit smoke runs for baseline, FF-discriminative, and FF-autoregressive with the new options.

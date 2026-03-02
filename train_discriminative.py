@@ -33,6 +33,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument("--checkpoint-every", type=int, default=1000)
     parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--eval-every", type=int, default=None)
+    parser.add_argument("--eval-train-max-samples", type=int, default=None)
+    parser.add_argument("--eval-test-max-samples", type=int, default=None)
+    parser.add_argument("--skip-goodness-eval", action="store_true")
+    parser.add_argument("--enable-logit-rank-diagnostics", action="store_true")
+    parser.add_argument("--logit-rank-eval-max-candidates", type=int, default=512)
     parser.add_argument("--split", type=str, default="mod5", choices=["mod5", "coverage", "random"])
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--test-size", type=int, default=20)
@@ -158,6 +164,12 @@ def main() -> None:
         max_answer_tokens=max_answer_tokens,
         max_answer_value=max_answer_value,
         max_full_candidate_answers=args.max_full_candidate_answers,
+        eval_every=args.eval_every,
+        eval_train_max_samples=args.eval_train_max_samples,
+        eval_test_max_samples=args.eval_test_max_samples,
+        enable_goodness_eval=not args.skip_goodness_eval,
+        enable_logit_rank_diagnostics=args.enable_logit_rank_diagnostics,
+        logit_rank_eval_max_candidates=args.logit_rank_eval_max_candidates,
         near_miss_start_step=near_miss_start_step,
         near_miss_offsets=near_miss_offsets,
         device=args.device,
@@ -190,18 +202,25 @@ def main() -> None:
             top_k=args.diagnose_top_k,
             collect_examples=True,
             max_examples=args.diagnose_max_examples,
+            max_candidates=args.logit_rank_eval_max_candidates,
         )
         test_diag = trainer.evaluate_logits_detailed(
             test_problems,
             top_k=args.diagnose_top_k,
             collect_examples=True,
             max_examples=args.diagnose_max_examples,
+            max_candidates=args.logit_rank_eval_max_candidates,
         )
 
         print("\nDiscriminative logit diagnostics")
         print(f"train mean_correct_rank={train_diag['mean_correct_rank']:.3f}")
         print(f"test mean_correct_rank={test_diag['mean_correct_rank']:.3f}")
         print(f"test per_sum_accuracy={test_diag['per_sum_accuracy']}")
+        if bool(train_diag.get("skipped", False)) or bool(test_diag.get("skipped", False)):
+            print(
+                "[warn] rank diagnostics skipped because candidate pool exceeded "
+                f"--logit-rank-eval-max-candidates={args.logit_rank_eval_max_candidates}"
+            )
 
         diagnostics = {
             "run_tag": run_tag,

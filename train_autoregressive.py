@@ -31,6 +31,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument("--checkpoint-every", type=int, default=1000)
     parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--eval-every", type=int, default=None)
+    parser.add_argument("--eval-train-max-samples", type=int, default=None)
+    parser.add_argument("--eval-test-max-samples", type=int, default=None)
+    parser.add_argument("--skip-goodness-eval", action="store_true")
     parser.add_argument("--split", type=str, default="mod5", choices=["mod5", "coverage", "random"])
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--test-size", type=int, default=20)
@@ -141,6 +145,10 @@ def main() -> None:
         max_answer_tokens=max_answer_tokens,
         max_answer_value=max_answer_value,
         max_full_candidate_answers=args.max_full_candidate_answers,
+        eval_every=args.eval_every,
+        eval_train_max_samples=args.eval_train_max_samples,
+        eval_test_max_samples=args.eval_test_max_samples,
+        enable_goodness_eval=not args.skip_goodness_eval,
         device=args.device,
         seed=args.seed,
         run_tag=run_tag,
