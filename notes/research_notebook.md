@@ -42,3 +42,11 @@
   - `test mean_correct_rank=6.0`
   - Only sums `7` and `10` were correct on this 20-example test split.
 - This points to selective sum-level generalization failure, not total collapse.
+
+### Entry 7
+- Coverage split + run-tagged checkpoints are now default for reproducible comparisons.
+- Current reference metrics (coverage split, 80/20):
+  - Baseline: test exact `0.20`
+  - FF discriminative (goodness): test exact `0.35`
+  - FF autoregressive (logits): test exact `0.25`
+- Remaining gap: discriminative logit inference generalizes poorly despite training well on train set.
