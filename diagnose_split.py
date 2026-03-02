@@ -10,9 +10,9 @@ from ffgpt import (
     BaselineTransformer,
     TransformerConfig,
     Vocab,
+    coverage_preserving_sum_split,
     generate_all_problems,
     generate_problems_for_operand_digits,
-    max_sum_for_operand_digits,
     summarize_answer_token_coverage,
     train_test_split,
 )
@@ -24,7 +24,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Diagnose split coverage and optional checkpoint behavior")
     parser.add_argument("--operand-digits", type=int, default=1)
     parser.add_argument("--samples", type=int, default=0, help="0 uses full grid when feasible")
-    parser.add_argument("--split", type=str, default="mod5", choices=["mod5", "random"])
+    parser.add_argument("--split", type=str, default="mod5", choices=["mod5", "coverage", "random"])
+    parser.add_argument("--test-size", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--device", type=str, default="cpu")
@@ -56,6 +57,12 @@ def main() -> None:
     problems = build_dataset(args.operand_digits, args.samples, args.seed)
     if args.split == "mod5":
         train_problems, test_problems = train_test_split(problems)
+    elif args.split == "coverage":
+        train_problems, test_problems = coverage_preserving_sum_split(
+            problems=problems,
+            test_size=args.test_size,
+            seed=args.seed,
+        )
     else:
         train_problems, test_problems = split_random(problems, args.seed)
 

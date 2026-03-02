@@ -216,6 +216,81 @@ def train_test_split(
     return train, test
 
 
+def coverage_preserving_sum_split(
+    problems: Sequence[Problem],
+    test_size: int = 20,
+    seed: int = 42,
+) -> tuple[list[Problem], list[Problem]]:
+    """Split into train/test while preserving answer-token coverage.
+
+    Strategy:
+    - Group equations by `answer` (sum).
+    - Never remove the only example for a sum from train.
+    - Start by taking one test example from each sum that has >=2 examples.
+    - Fill the remaining test budget from sums with the most remaining capacity.
+
+    This keeps every test answer value represented in train, which prevents
+    degenerate cases where output tokens appear only in test targets.
+    """
+    if test_size < 0:
+        raise ValueError(f"test_size must be >= 0, got {test_size}")
+
+    groups: dict[int, list[Problem]] = {}
+    for problem in problems:
+        groups.setdefault(problem.answer, []).append(problem)
+
+    total = len(problems)
+    if test_size > total:
+        raise ValueError(f"test_size={test_size} exceeds dataset size={total}")
+
+    # Maximum feasible test size when keeping >=1 example per answer in train.
+    max_test_size = total - len(groups)
+    if test_size > max_test_size:
+        raise ValueError(
+            f"test_size={test_size} is too large for coverage-preserving split; "
+            f"maximum is {max_test_size} for this dataset"
+        )
+
+    rng = random.Random(seed)
+    shuffled_by_sum: dict[int, list[Problem]] = {}
+    for answer, group in groups.items():
+        items = list(group)
+        rng.shuffle(items)
+        shuffled_by_sum[answer] = items
+
+    taken_by_sum: dict[int, int] = {answer: 0 for answer in shuffled_by_sum}
+    test: list[Problem] = []
+
+    # Pass 1: one sample from each answer bucket with at least 2 examples.
+    for answer in sorted(shuffled_by_sum):
+        bucket = shuffled_by_sum[answer]
+        if len(bucket) >= 2 and len(test) < test_size:
+            test.append(bucket[0])
+            taken_by_sum[answer] = 1
+
+    # Pass 2: fill remaining budget while leaving >=1 sample per sum in train.
+    while len(test) < test_size:
+        # capacity = how many additional examples we can move from this sum.
+        capacities = [
+            (answer, len(shuffled_by_sum[answer]) - 1 - taken_by_sum[answer]) for answer in sorted(shuffled_by_sum)
+        ]
+        capacities = [item for item in capacities if item[1] > 0]
+        if not capacities:
+            break
+
+        # Prefer largest capacity; tie-break by answer value for determinism.
+        capacities.sort(key=lambda item: (-item[1], item[0]))
+        answer = capacities[0][0]
+        take_index = taken_by_sum[answer]
+        test.append(shuffled_by_sum[answer][take_index])
+        taken_by_sum[answer] += 1
+
+    test_ids = {(problem.a, problem.b, problem.answer) for problem in test}
+    train = [problem for problem in problems if (problem.a, problem.b, problem.answer) not in test_ids]
+
+    return train, test
+
+
 def sample_negative_answer(
     correct_answer: int,
     strategy: str = "random",

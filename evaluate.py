@@ -12,7 +12,9 @@ from ffgpt import (
     FFTransformer,
     TransformerConfig,
     Vocab,
+    coverage_preserving_sum_split,
     generate_all_problems,
+    summarize_answer_token_coverage,
     train_test_split,
 )
 from ffgpt.utils import (
@@ -34,6 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--autoregressive-checkpoint", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default="checkpoints/eval")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--split", type=str, default="mod5", choices=["mod5", "coverage", "random"])
+    parser.add_argument("--split-seed", type=int, default=42)
+    parser.add_argument("--test-size", type=int, default=20)
     return parser.parse_args()
 
 
@@ -64,7 +69,41 @@ def main() -> None:
     out_dir = ensure_dir(args.output_dir)
     vocab = Vocab()
     problems = generate_all_problems()
-    train_problems, test_problems = train_test_split(problems)
+    if args.test_size <= 0 or args.test_size >= len(problems):
+        raise ValueError(f"--test-size must be in [1, {len(problems)-1}], got {args.test_size}")
+
+    if args.split == "mod5":
+        train_problems, test_problems = train_test_split(problems)
+    elif args.split == "coverage":
+        train_problems, test_problems = coverage_preserving_sum_split(
+            problems=problems,
+            test_size=args.test_size,
+            seed=args.split_seed,
+        )
+    else:
+        import random
+
+        rng = random.Random(args.split_seed)
+        shuffled = list(problems)
+        rng.shuffle(shuffled)
+        n_test = args.test_size
+        n_train = len(shuffled) - n_test
+        train_problems, test_problems = shuffled[:n_train], shuffled[n_train:]
+
+    print(
+        f"[split] strategy={args.split} train={len(train_problems)} test={len(test_problems)} "
+        f"split_seed={args.split_seed}"
+    )
+    coverage = summarize_answer_token_coverage(
+        train_problems=train_problems,
+        test_problems=test_problems,
+        max_answer_tokens=2,
+    )
+    missing = coverage["missing_test_tokens_in_train_by_position"]
+    if any(missing):
+        print("[warn] test answer tokens missing from train targets by output position:")
+        for idx, missing_tokens in enumerate(missing):
+            print(f"  position_{idx}: {missing_tokens}")
 
     baseline_ckpt_path = resolve_checkpoint_path(args.baseline_checkpoint, args.checkpoint_dir, "baseline")
     disc_ckpt_path = resolve_checkpoint_path(args.discriminative_checkpoint, args.checkpoint_dir, "discriminative")
@@ -211,6 +250,13 @@ def main() -> None:
     plot_block_diagnostics("autoregressive", ar_ckpt.get("history", {}))
 
     summary = {
+        "split": {
+            "strategy": args.split,
+            "split_seed": args.split_seed,
+            "train_size": len(train_problems),
+            "test_size": len(test_problems),
+            "missing_test_tokens_in_train_by_position": missing,
+        },
         "checkpoints": {
             "baseline": str(baseline_ckpt_path),
             "discriminative": str(disc_ckpt_path),

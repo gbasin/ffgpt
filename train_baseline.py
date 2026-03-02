@@ -7,6 +7,7 @@ from ffgpt import (
     BaselineTransformer,
     TransformerConfig,
     Vocab,
+    coverage_preserving_sum_split,
     generate_all_problems,
     run_roundtrip_tests,
     summarize_answer_token_coverage,
@@ -28,6 +29,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-train-max-samples", type=int, default=None)
     parser.add_argument("--eval-test-max-samples", type=int, default=None)
     parser.add_argument("--no-eval-step-one", action="store_true")
+    parser.add_argument("--split", type=str, default="mod5", choices=["mod5", "coverage", "random"])
+    parser.add_argument("--split-seed", type=int, default=42)
+    parser.add_argument("--test-size", type=int, default=20)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--d-model", type=int, default=64)
     parser.add_argument("--n-heads", type=int, default=2)
@@ -43,7 +47,30 @@ def main() -> None:
 
     vocab = Vocab()
     problems = generate_all_problems()
-    train_problems, test_problems = train_test_split(problems)
+    if args.test_size <= 0 or args.test_size >= len(problems):
+        raise ValueError(f"--test-size must be in [1, {len(problems)-1}], got {args.test_size}")
+    if args.split == "mod5":
+        train_problems, test_problems = train_test_split(problems)
+    elif args.split == "coverage":
+        train_problems, test_problems = coverage_preserving_sum_split(
+            problems=problems,
+            test_size=args.test_size,
+            seed=args.split_seed,
+        )
+    else:
+        import random
+
+        rng = random.Random(args.split_seed)
+        shuffled = list(problems)
+        rng.shuffle(shuffled)
+        n_test = args.test_size
+        n_train = len(shuffled) - n_test
+        train_problems, test_problems = shuffled[:n_train], shuffled[n_train:]
+
+    print(
+        f"[split] strategy={args.split} train={len(train_problems)} test={len(test_problems)} "
+        f"split_seed={args.split_seed}"
+    )
     coverage = summarize_answer_token_coverage(
         train_problems=train_problems,
         test_problems=test_problems,
