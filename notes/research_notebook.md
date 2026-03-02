@@ -50,3 +50,14 @@
   - FF discriminative (goodness): test exact `0.35`
   - FF autoregressive (logits): test exact `0.25`
 - Remaining gap: discriminative logit inference generalizes poorly despite training well on train set.
+
+### Entry 8
+- Ran quick train-size sweep on coverage split (`n_train = 20/40/60/80`, `steps=800`) for baseline + FF variants.
+- Results were noisy and non-monotonic at this small scale/short budget.
+- Stronger signal comes from longer runs and larger datasets:
+  - baseline (1-digit, coverage split, 2000 steps): test exact `0.20`
+  - FF-discriminative goodness (1-digit, coverage split, 2000 steps): test exact `0.35`
+  - FF-autoregressive logits (1-digit, coverage split, 2000 steps): test exact `0.25`
+  - baseline (4-digit, random split, 10k samples): test exact `~0.85` after 2k steps
+  - baseline (5-digit, random split, 12k samples): still low at 2.5k steps (undertrained regime)
+- Conclusion: larger-scale baseline clearly improves with enough data/steps; FF scaling to higher digits is not yet tested in current implementation.
