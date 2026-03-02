@@ -11,10 +11,10 @@ from .data import (
     ANSWER_MAX,
     Problem,
     Vocab,
-    answer_to_token_ids,
+    answer_to_token_ids_variable,
     build_problem_tensor,
     generate_all_problems,
-    parse_answer_tokens,
+    parse_answer_tokens_variable,
     train_test_split,
 )
 from .model import BaselineTransformer
@@ -42,6 +42,9 @@ class BackpropTrainer:
         checkpoint_every: int = 1000,
         checkpoint_dir: str = "checkpoints",
         device: str = "cpu",
+        sequence_length: int | None = None,
+        max_answer_tokens: int | None = None,
+        max_answer_value: int | None = None,
     ) -> None:
         self.model = model
         self.vocab = vocab
@@ -53,11 +56,24 @@ class BackpropTrainer:
         self.checkpoint_every = checkpoint_every
         self.checkpoint_dir = Path(checkpoint_dir)
         self.device = torch.device(device)
+        self.sequence_length = int(sequence_length) if sequence_length is not None else int(self.model.config.max_seq_len)
+
+        if self.sequence_length > self.model.config.max_seq_len:
+            raise ValueError(
+                f"sequence_length={self.sequence_length} exceeds model max_seq_len={self.model.config.max_seq_len}"
+            )
+
+        all_problems = self.train_problems + self.test_problems
+        inferred_max_answer_tokens = max(len(str(problem.answer)) for problem in all_problems) if all_problems else 2
+        self.max_answer_tokens = int(max_answer_tokens) if max_answer_tokens is not None else inferred_max_answer_tokens
+        self.max_answer_value = (
+            int(max_answer_value) if max_answer_value is not None else max((problem.answer for problem in all_problems), default=ANSWER_MAX)
+        )
 
         self.model.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
-        self.train_tensor = build_problem_tensor(self.train_problems, self.vocab).to(self.device)
+        self.train_tensor = build_problem_tensor(self.train_problems, self.vocab, max_len=self.sequence_length).to(self.device)
 
         self.history: dict[str, list[float | int]] = {
             "step": [],
@@ -72,14 +88,18 @@ class BackpropTrainer:
         idx = torch.randint(0, self.train_tensor.shape[0], (self.batch_size,), device=self.device)
         return self.train_tensor[idx]
 
+    def _prompt_token_ids(self, a: int, b: int) -> list[int]:
+        prompt_tokens = [*list(str(a)), "+", *list(str(b)), "="]
+        return self.vocab.encode_tokens(prompt_tokens)
+
     @torch.no_grad()
     def predict_with_logits(self, a: int, b: int) -> tuple[int | None, list[int]]:
         self.model.eval()
 
-        context = [self.vocab.token_to_id[str(a)], self.vocab.plus_id, self.vocab.token_to_id[str(b)], self.vocab.equals_id]
+        context = self._prompt_token_ids(a, b)
         generated: list[int] = []
 
-        for _ in range(2):
+        for _ in range(self.max_answer_tokens):
             input_ids = torch.tensor([context], dtype=torch.long, device=self.device)
             pad_mask = input_ids != self.vocab.pad_id
             logits, _, _ = self.model(input_ids, pad_mask=pad_mask, causal=True)
@@ -89,10 +109,15 @@ class BackpropTrainer:
             if next_token == self.vocab.pad_id:
                 break
 
-        if len(generated) < 2:
-            generated.extend([self.vocab.pad_id] * (2 - len(generated)))
+        if len(generated) < self.max_answer_tokens:
+            generated.extend([self.vocab.pad_id] * (self.max_answer_tokens - len(generated)))
 
-        pred_answer, normalized = parse_answer_tokens(generated[:2], self.vocab)
+        pred_answer, normalized = parse_answer_tokens_variable(
+            generated[: self.max_answer_tokens],
+            self.vocab,
+            expected_length=self.max_answer_tokens,
+            max_answer_value=self.max_answer_value,
+        )
         return pred_answer, normalized
 
     @torch.no_grad()
@@ -105,7 +130,12 @@ class BackpropTrainer:
 
         for problem in problems:
             pred_answer, pred_tokens = self.predict_with_logits(problem.a, problem.b)
-            target_tokens = answer_to_token_ids(problem.answer, self.vocab)
+            target_tokens = answer_to_token_ids_variable(
+                problem.answer,
+                self.vocab,
+                total_answer_tokens=self.max_answer_tokens,
+                max_answer_value=self.max_answer_value,
+            )
 
             token_correct += sum(int(p == t) for p, t in zip(pred_tokens, target_tokens))
             token_total += len(target_tokens)
@@ -130,6 +160,9 @@ class BackpropTrainer:
             "optimizer_state": self.optimizer.state_dict(),
             "history": self.history,
             "config": self.model.config.__dict__,
+            "sequence_length": self.sequence_length,
+            "max_answer_tokens": self.max_answer_tokens,
+            "max_answer_value": self.max_answer_value,
             "rng_states": capture_rng_states(),
         }
         return save_checkpoint(ckpt_path, state)

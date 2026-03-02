@@ -91,6 +91,9 @@ def main() -> None:
         num_steps=0,
         checkpoint_dir=args.checkpoint_dir,
         device=args.device,
+        sequence_length=baseline_ckpt.get("sequence_length"),
+        max_answer_tokens=baseline_ckpt.get("max_answer_tokens"),
+        max_answer_value=baseline_ckpt.get("max_answer_value"),
     )
     disc_trainer = FFDiscriminativeTrainer(
         model=disc_model,

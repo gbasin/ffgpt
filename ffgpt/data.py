@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import random
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Sequence
 
 import torch
 from torch.utils.data import Dataset
@@ -49,8 +49,15 @@ class Vocab:
     def decode_ids(self, token_ids: Sequence[int]) -> list[str]:
         return [self.id_to_token[int(token_id)] for token_id in token_ids]
 
-    def encode_equation(self, a: int, b: int, answer: int, max_len: int = MAX_SEQ_LEN) -> list[int]:
-        tokens = format_equation_tokens(a, b, answer)
+    def encode_equation(
+        self,
+        a: int,
+        b: int,
+        answer: int,
+        max_len: int = MAX_SEQ_LEN,
+        validate_sum: bool = False,
+    ) -> list[int]:
+        tokens = format_equation_tokens(a, b, answer, validate_sum=validate_sum)
         if len(tokens) > max_len:
             raise ValueError(f"Equation tokens exceed max_len={max_len}: {tokens}")
         padded = tokens + [PAD_TOKEN] * (max_len - len(tokens))
@@ -62,48 +69,131 @@ class Vocab:
         return "".join(no_pad)
 
 
-def format_equation_tokens(a: int, b: int, answer: int) -> list[str]:
-    if not (0 <= a <= 9 and 0 <= b <= 9 and ANSWER_MIN <= answer <= ANSWER_MAX):
-        raise ValueError(f"Invalid equation values: {a}+{b}={answer}")
-    return [str(a), PLUS_TOKEN, str(b), EQUALS_TOKEN, *list(str(answer))]
+def format_equation_tokens(a: int, b: int, answer: int, validate_sum: bool = True) -> list[str]:
+    if a < 0 or b < 0 or answer < 0:
+        raise ValueError(f"Only non-negative integers are supported, got {a}+{b}={answer}")
+    if validate_sum and a + b != answer:
+        raise ValueError(f"Answer does not match operands: {a}+{b}!={answer}")
+    return [*list(str(a)), PLUS_TOKEN, *list(str(b)), EQUALS_TOKEN, *list(str(answer))]
+
+
+def max_sum_for_operand_digits(operand_digits: int) -> int:
+    if operand_digits <= 0:
+        raise ValueError(f"operand_digits must be >= 1, got {operand_digits}")
+    max_operand = (10**operand_digits) - 1
+    return max_operand * 2
+
+
+def max_seq_len_for_operand_digits(operand_digits: int) -> int:
+    # [a_digits] + '+' + [b_digits] + '=' + [answer_digits<=operand_digits+1]
+    return (2 * operand_digits) + (operand_digits + 1) + 2
+
+
+def generate_problems_for_operand_digits(
+    operand_digits: int,
+    num_samples: int | None = None,
+    seed: int = 42,
+    exhaustive_limit: int = 100_000,
+) -> list[Problem]:
+    if operand_digits <= 0:
+        raise ValueError(f"operand_digits must be >= 1, got {operand_digits}")
+
+    max_operand = (10**operand_digits) - 1
+    domain_size = (max_operand + 1) ** 2
+
+    if num_samples is None and domain_size <= exhaustive_limit:
+        return [Problem(a=a, b=b, answer=a + b) for a in range(max_operand + 1) for b in range(max_operand + 1)]
+
+    if num_samples is None:
+        num_samples = min(exhaustive_limit, domain_size)
+    if num_samples <= 0:
+        raise ValueError(f"num_samples must be > 0 when provided, got {num_samples}")
+
+    rng = random.Random(seed)
+    problems: list[Problem] = []
+    seen: set[tuple[int, int]] = set()
+
+    while len(problems) < num_samples:
+        a = rng.randint(0, max_operand)
+        b = rng.randint(0, max_operand)
+        key = (a, b)
+        if key in seen:
+            continue
+        seen.add(key)
+        problems.append(Problem(a=a, b=b, answer=a + b))
+
+    return problems
 
 
 def parse_answer_tokens(token_ids: Sequence[int], vocab: Vocab) -> tuple[int | None, list[int]]:
-    """Parse up to two answer tokens into an int in [0, 18].
+    return parse_answer_tokens_variable(
+        token_ids=token_ids[:2],
+        vocab=vocab,
+        expected_length=2,
+        max_answer_value=ANSWER_MAX,
+    )
 
-    Returns `(parsed_answer_or_none, normalized_token_ids_len_2)`.
-    """
-    ids = [int(x) for x in token_ids[:2]]
-    if len(ids) < 2:
-        ids.extend([vocab.pad_id] * (2 - len(ids)))
 
-    toks = vocab.decode_ids(ids)
+def answer_to_token_ids(answer: int, vocab: Vocab) -> list[int]:
+    return answer_to_token_ids_variable(answer=answer, vocab=vocab, total_answer_tokens=2, max_answer_value=ANSWER_MAX)
+
+
+def answer_to_token_ids_variable(
+    answer: int,
+    vocab: Vocab,
+    total_answer_tokens: int,
+    max_answer_value: int | None = None,
+) -> list[int]:
+    if answer < 0:
+        raise ValueError(f"Answer must be non-negative, got {answer}")
+    if max_answer_value is not None and answer > max_answer_value:
+        raise ValueError(f"Answer out of range: {answer} > {max_answer_value}")
+
+    digits = list(str(answer))
+    if len(digits) > total_answer_tokens:
+        raise ValueError(
+            f"Answer {answer} has {len(digits)} digits, exceeds total_answer_tokens={total_answer_tokens}"
+        )
+    padded = digits + [PAD_TOKEN] * (total_answer_tokens - len(digits))
+    return vocab.encode_tokens(padded)
+
+
+def parse_answer_tokens_variable(
+    token_ids: Sequence[int],
+    vocab: Vocab,
+    expected_length: int | None = None,
+    max_answer_value: int | None = None,
+) -> tuple[int | None, list[int]]:
+    ids = [int(x) for x in token_ids]
+    if expected_length is not None:
+        if len(ids) > expected_length:
+            ids = ids[:expected_length]
+        elif len(ids) < expected_length:
+            ids.extend([vocab.pad_id] * (expected_length - len(ids)))
+
+    tokens = vocab.decode_ids(ids)
     digits: list[str] = []
-    for tok in toks:
-        if tok == PAD_TOKEN:
+    for token in tokens:
+        if token == PAD_TOKEN:
             break
-        if tok not in DIGIT_TOKENS:
+        if token not in DIGIT_TOKENS:
             return None, ids
-        digits.append(tok)
+        digits.append(token)
 
     if not digits:
         return None, ids
 
-    val = int("".join(digits))
-    if val < ANSWER_MIN or val > ANSWER_MAX:
+    value = int("".join(digits))
+    if max_answer_value is not None and value > max_answer_value:
         return None, ids
 
-    expected_ids = answer_to_token_ids(val, vocab)
-    return val, expected_ids
-
-
-def answer_to_token_ids(answer: int, vocab: Vocab) -> list[int]:
-    if answer < ANSWER_MIN or answer > ANSWER_MAX:
-        raise ValueError(f"Answer out of range: {answer}")
-    digits = list(str(answer))
-    if len(digits) == 1:
-        digits.append(PAD_TOKEN)
-    return vocab.encode_tokens(digits)
+    normalized = answer_to_token_ids_variable(
+        answer=value,
+        vocab=vocab,
+        total_answer_tokens=len(ids),
+        max_answer_value=max_answer_value,
+    )
+    return value, normalized
 
 
 def tokenize_problem(problem: Problem, vocab: Vocab, max_len: int = MAX_SEQ_LEN) -> torch.Tensor:
@@ -173,12 +263,14 @@ class DiscriminativeDataset(Dataset[dict[str, torch.Tensor | int]]):
         vocab: Vocab,
         negative_strategy: str = "random",
         near_miss_offsets: Sequence[int] = (1,),
+        max_len: int = MAX_SEQ_LEN,
         seed: int | None = None,
     ) -> None:
         self.problems = list(problems)
         self.vocab = vocab
         self.negative_strategy = negative_strategy
         self.near_miss_offsets = tuple(int(x) for x in near_miss_offsets)
+        self.max_len = int(max_len)
         self.rng = random.Random(seed)
 
     def __len__(self) -> int:
@@ -197,9 +289,9 @@ class DiscriminativeDataset(Dataset[dict[str, torch.Tensor | int]]):
             near_miss_offsets=self.near_miss_offsets,
             rng=self.rng,
         )
-        pos_tokens = tokenize_problem(problem, self.vocab)
+        pos_tokens = tokenize_problem(problem, self.vocab, max_len=self.max_len)
         neg_tokens = torch.tensor(
-            self.vocab.encode_equation(problem.a, problem.b, negative_answer, max_len=MAX_SEQ_LEN), dtype=torch.long
+            self.vocab.encode_equation(problem.a, problem.b, negative_answer, max_len=self.max_len), dtype=torch.long
         )
 
         return {
@@ -213,16 +305,17 @@ class DiscriminativeDataset(Dataset[dict[str, torch.Tensor | int]]):
 
 
 class AutoregressiveDataset(Dataset[dict[str, torch.Tensor | int]]):
-    def __init__(self, problems: Sequence[Problem], vocab: Vocab) -> None:
+    def __init__(self, problems: Sequence[Problem], vocab: Vocab, max_len: int = MAX_SEQ_LEN) -> None:
         self.problems = list(problems)
         self.vocab = vocab
+        self.max_len = int(max_len)
 
     def __len__(self) -> int:
         return len(self.problems)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor | int]:
         problem = self.problems[idx]
-        tokens = tokenize_problem(problem, self.vocab)
+        tokens = tokenize_problem(problem, self.vocab, max_len=self.max_len)
         return {
             "tokens": tokens,
             "a": problem.a,
@@ -231,8 +324,8 @@ class AutoregressiveDataset(Dataset[dict[str, torch.Tensor | int]]):
         }
 
 
-def build_problem_tensor(problems: Sequence[Problem], vocab: Vocab) -> torch.Tensor:
-    return torch.stack([tokenize_problem(problem, vocab) for problem in problems], dim=0)
+def build_problem_tensor(problems: Sequence[Problem], vocab: Vocab, max_len: int = MAX_SEQ_LEN) -> torch.Tensor:
+    return torch.stack([tokenize_problem(problem, vocab, max_len=max_len) for problem in problems], dim=0)
 
 
 def run_roundtrip_tests() -> None:

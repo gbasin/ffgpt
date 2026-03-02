@@ -54,7 +54,17 @@ def load_checkpoint(path: str | Path, map_location: str | torch.device = "cpu") 
 
 def latest_checkpoint(checkpoint_dir: str | Path, mode: str) -> Path | None:
     ckpt_dir = Path(checkpoint_dir)
-    matches = sorted(ckpt_dir.glob(f"{mode}_step*.pt"))
+    def step_key(path: Path) -> int:
+        stem = path.stem
+        marker = "_step"
+        if marker not in stem:
+            return -1
+        try:
+            return int(stem.split(marker, 1)[1])
+        except ValueError:
+            return -1
+
+    matches = sorted(ckpt_dir.glob(f"{mode}_step*.pt"), key=step_key)
     if not matches:
         return None
     return matches[-1]
