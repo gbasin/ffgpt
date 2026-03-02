@@ -111,3 +111,30 @@
   - baseline, FF-discriminative(logits), and FF-autoregressive(logits) all at `0.000` exact-match.
   - token accuracy non-zero but low (`~0.19-0.28`) indicates partial token learning without full-equation correctness.
 - Takeaway: this setting is severely undertrained for exact-match at 5 digits across all methods.
+
+### Entry 15
+- Ran FF-AR memorization sanity gates on tiny random splits before changing objective:
+  - 1-digit (`n=64`, train=48): reached `train exact=1.000` by 1200-2000 steps.
+  - 2-digit (`n=256`, train=192): reached `train exact=1.000` by ~1800-3000 steps.
+- Takeaway: FF-AR objective can memorize small datasets; the main issue is scaling/generalization, not total inability to fit.
+
+### Entry 16
+- Implemented AR ablation knobs:
+  - output projection detach toggle (`--no-detach-output-embedding`)
+  - optional per-block LM heads (`--use-per-block-output-heads`)
+  - block CE weighting (`--final-block-loss-weight`, `--nonfinal-block-loss-weight`)
+- Added checkpoint/eval plumbing for these settings and head states.
+- Added candidate-loss instrumentation:
+  - weighted candidate loss
+  - unweighted candidate loss
+  - final-block candidate loss
+  - non-final mean candidate loss
+
+### Entry 17
+- 3-digit long ablation matrix (`n=20000`, random split, 2000 steps, eval=512):
+  - prior AR baseline (detach, no heads): test exact `0.0039`
+  - `no_detach`: test exact `0.0020` (worse)
+  - `per_block_heads` (equal weights): test exact `0.0059` (small gain)
+  - `per_block_heads + final_weight=2.0, nonfinal=0.5`: test exact `0.0059` (same exact as equal weights)
+- Baseline backprop at same setup remains much higher (`0.2656` exact).
+- Takeaway: per-block heads help slightly, detach toggle does not; gap to baseline remains large.
