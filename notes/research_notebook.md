@@ -138,3 +138,13 @@
   - `per_block_heads + final_weight=2.0, nonfinal=0.5`: test exact `0.0059` (same exact as equal weights)
 - Baseline backprop at same setup remains much higher (`0.2656` exact).
 - Takeaway: per-block heads help slightly, detach toggle does not; gap to baseline remains large.
+
+### Entry 18
+- Added `train_length_ood.py` for clean digit-length OOD experiments (train on digit length `d`, test on `d+1`).
+- First OOD benchmark (`2-digit train -> 3-digit test`, train=10000 exhaustive, test=4000 random, 2000 steps):
+  - baseline: train exact `0.9167`, test exact `0.0092`
+  - FF-AR default: train exact `0.0898`, test exact `0.0020`
+  - FF-AR heads+weighted (`final=2.0`, `nonfinal=0.5`): train exact `0.0996`, test exact `0.0020`
+- Important caveat surfaced by instrumentation:
+  - test answer position 3 tokens (`0..9`) are completely missing in train targets for `2->3` (new answer digit position).
+  - This is a very hard extrapolation regime; low exact-match for all models is expected.
