@@ -55,6 +55,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/curriculum")
     parser.add_argument("--checkpoint-every", type=int, default=1000)
     parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--eval-every", type=int, default=None)
+    parser.add_argument("--eval-train-max-samples", type=int, default=None)
+    parser.add_argument("--eval-test-max-samples", type=int, default=None)
+    parser.add_argument("--no-eval-step-one", action="store_true")
     parser.add_argument("--device", type=str, default="cpu")
 
     parser.add_argument("--d-model", type=int, default=64)
@@ -137,6 +141,10 @@ def main() -> None:
             sequence_length=stage_seq_len,
             max_answer_tokens=stage_answer_tokens,
             max_answer_value=stage_answer_max,
+            eval_every=args.eval_every,
+            eval_train_max_samples=args.eval_train_max_samples,
+            eval_test_max_samples=args.eval_test_max_samples,
+            eval_at_step_one=not args.no_eval_step_one,
         )
 
         result = trainer.train(log_every=args.log_every)

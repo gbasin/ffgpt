@@ -11,6 +11,7 @@ from .data import (
     max_seq_len_for_operand_digits,
     max_sum_for_operand_digits,
     run_roundtrip_tests,
+    summarize_answer_token_coverage,
     train_test_split,
 )
 from .ff_trainer import FFAutoregressiveTrainer, FFDiscriminativeTrainer
@@ -28,6 +29,7 @@ __all__ = [
     "max_seq_len_for_operand_digits",
     "max_sum_for_operand_digits",
     "run_roundtrip_tests",
+    "summarize_answer_token_coverage",
     "train_test_split",
     "TransformerConfig",
     "FFTransformer",

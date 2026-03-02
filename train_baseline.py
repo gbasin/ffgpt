@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import argparse
 
-from ffgpt import BackpropTrainer, BaselineTransformer, TransformerConfig, Vocab, generate_all_problems, run_roundtrip_tests, train_test_split
+from ffgpt import (
+    BackpropTrainer,
+    BaselineTransformer,
+    TransformerConfig,
+    Vocab,
+    generate_all_problems,
+    run_roundtrip_tests,
+    summarize_answer_token_coverage,
+    train_test_split,
+)
 from ffgpt.utils import set_seed
 
 
@@ -15,6 +24,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument("--checkpoint-every", type=int, default=1000)
     parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--eval-every", type=int, default=None)
+    parser.add_argument("--eval-train-max-samples", type=int, default=None)
+    parser.add_argument("--eval-test-max-samples", type=int, default=None)
+    parser.add_argument("--no-eval-step-one", action="store_true")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--d-model", type=int, default=64)
     parser.add_argument("--n-heads", type=int, default=2)
@@ -31,6 +44,16 @@ def main() -> None:
     vocab = Vocab()
     problems = generate_all_problems()
     train_problems, test_problems = train_test_split(problems)
+    coverage = summarize_answer_token_coverage(
+        train_problems=train_problems,
+        test_problems=test_problems,
+        max_answer_tokens=2,
+    )
+    missing = coverage["missing_test_tokens_in_train_by_position"]
+    if any(missing):
+        print("[warn] test answer tokens missing from train targets by output position:")
+        for idx, missing_tokens in enumerate(missing):
+            print(f"  position_{idx}: {missing_tokens}")
 
     config = TransformerConfig(
         vocab_size=vocab.size,
@@ -55,6 +78,10 @@ def main() -> None:
         checkpoint_every=args.checkpoint_every,
         checkpoint_dir=args.checkpoint_dir,
         device=args.device,
+        eval_every=args.eval_every,
+        eval_train_max_samples=args.eval_train_max_samples,
+        eval_test_max_samples=args.eval_test_max_samples,
+        eval_at_step_one=not args.no_eval_step_one,
     )
 
     result = trainer.train(log_every=args.log_every)

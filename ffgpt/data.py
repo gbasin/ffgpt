@@ -345,6 +345,46 @@ def run_roundtrip_tests() -> None:
         raise AssertionError(f"Expected 80/20 split, got {len(train)}/{len(test)}")
 
 
+def summarize_answer_token_coverage(
+    train_problems: Sequence[Problem],
+    test_problems: Sequence[Problem],
+    max_answer_tokens: int,
+) -> dict[str, object]:
+    def answer_tokens(answer: int) -> list[str]:
+        digits = list(str(answer))
+        if len(digits) > max_answer_tokens:
+            # Truncate only for reporting shape consistency; caller should pick sensible max_answer_tokens.
+            return digits[:max_answer_tokens]
+        return digits + [PAD_TOKEN] * (max_answer_tokens - len(digits))
+
+    train_by_pos: list[dict[str, int]] = [dict() for _ in range(max_answer_tokens)]
+    test_by_pos: list[dict[str, int]] = [dict() for _ in range(max_answer_tokens)]
+
+    for problem in train_problems:
+        tokens = answer_tokens(problem.answer)
+        for pos, token in enumerate(tokens):
+            train_by_pos[pos][token] = train_by_pos[pos].get(token, 0) + 1
+
+    for problem in test_problems:
+        tokens = answer_tokens(problem.answer)
+        for pos, token in enumerate(tokens):
+            test_by_pos[pos][token] = test_by_pos[pos].get(token, 0) + 1
+
+    missing_by_pos: list[list[str]] = []
+    for pos in range(max_answer_tokens):
+        train_tokens = set(train_by_pos[pos].keys())
+        test_tokens = set(test_by_pos[pos].keys())
+        missing = sorted(test_tokens.difference(train_tokens))
+        missing_by_pos.append(missing)
+
+    return {
+        "max_answer_tokens": max_answer_tokens,
+        "train_distribution_by_position": train_by_pos,
+        "test_distribution_by_position": test_by_pos,
+        "missing_test_tokens_in_train_by_position": missing_by_pos,
+    }
+
+
 if __name__ == "__main__":
     run_roundtrip_tests()
     print("data.py checks passed")

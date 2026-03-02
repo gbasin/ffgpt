@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import argparse
 
-from ffgpt import FFAutoregressiveTrainer, FFTransformer, TransformerConfig, Vocab, generate_all_problems, run_roundtrip_tests, train_test_split
+from ffgpt import (
+    FFAutoregressiveTrainer,
+    FFTransformer,
+    TransformerConfig,
+    Vocab,
+    generate_all_problems,
+    run_roundtrip_tests,
+    summarize_answer_token_coverage,
+    train_test_split,
+)
 from ffgpt.utils import set_seed
 
 
@@ -34,6 +43,16 @@ def main() -> None:
     vocab = Vocab()
     problems = generate_all_problems()
     train_problems, test_problems = train_test_split(problems)
+    coverage = summarize_answer_token_coverage(
+        train_problems=train_problems,
+        test_problems=test_problems,
+        max_answer_tokens=2,
+    )
+    missing = coverage["missing_test_tokens_in_train_by_position"]
+    if any(missing):
+        print("[warn] test answer tokens missing from train targets by output position:")
+        for idx, missing_tokens in enumerate(missing):
+            print(f"  position_{idx}: {missing_tokens}")
 
     config = TransformerConfig(
         vocab_size=vocab.size,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import random
 from typing import Any
 
 import torch
@@ -45,6 +46,11 @@ class BackpropTrainer:
         sequence_length: int | None = None,
         max_answer_tokens: int | None = None,
         max_answer_value: int | None = None,
+        eval_every: int | None = None,
+        eval_train_max_samples: int | None = None,
+        eval_test_max_samples: int | None = None,
+        eval_at_step_one: bool = True,
+        eval_seed: int = 12345,
     ) -> None:
         self.model = model
         self.vocab = vocab
@@ -69,6 +75,11 @@ class BackpropTrainer:
         self.max_answer_value = (
             int(max_answer_value) if max_answer_value is not None else max((problem.answer for problem in all_problems), default=ANSWER_MAX)
         )
+        self.eval_every = int(eval_every) if eval_every is not None else None
+        self.eval_train_max_samples = int(eval_train_max_samples) if eval_train_max_samples is not None else None
+        self.eval_test_max_samples = int(eval_test_max_samples) if eval_test_max_samples is not None else None
+        self.eval_at_step_one = bool(eval_at_step_one)
+        self.eval_rng = random.Random(eval_seed)
 
         self.model.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
@@ -82,6 +93,8 @@ class BackpropTrainer:
             "test_token_accuracy": [],
             "train_sequence_exact_match": [],
             "test_sequence_exact_match": [],
+            "train_eval_size": [],
+            "test_eval_size": [],
         }
 
     def _sample_batch(self) -> torch.Tensor:
@@ -91,6 +104,19 @@ class BackpropTrainer:
     def _prompt_token_ids(self, a: int, b: int) -> list[int]:
         prompt_tokens = [*list(str(a)), "+", *list(str(b)), "="]
         return self.vocab.encode_tokens(prompt_tokens)
+
+    def _should_eval(self, step: int, log_every: int) -> bool:
+        interval = self.eval_every if self.eval_every is not None else log_every
+        if step == self.num_steps:
+            return True
+        if self.eval_at_step_one and step == 1:
+            return True
+        return interval > 0 and (step % interval == 0)
+
+    def _maybe_subsample(self, problems: list[Problem], max_samples: int | None) -> list[Problem]:
+        if max_samples is None or max_samples <= 0 or len(problems) <= max_samples:
+            return list(problems)
+        return self.eval_rng.sample(problems, max_samples)
 
     @torch.no_grad()
     def predict_with_logits(self, a: int, b: int) -> tuple[int | None, list[int]]:
@@ -163,6 +189,10 @@ class BackpropTrainer:
             "sequence_length": self.sequence_length,
             "max_answer_tokens": self.max_answer_tokens,
             "max_answer_value": self.max_answer_value,
+            "eval_every": self.eval_every,
+            "eval_train_max_samples": self.eval_train_max_samples,
+            "eval_test_max_samples": self.eval_test_max_samples,
+            "eval_at_step_one": self.eval_at_step_one,
             "rng_states": capture_rng_states(),
         }
         return save_checkpoint(ckpt_path, state)
@@ -183,9 +213,15 @@ class BackpropTrainer:
             loss.backward()
             self.optimizer.step()
 
-            if step % log_every == 0 or step == 1 or step == self.num_steps:
-                train_eval = self.evaluate(self.train_problems)
-                test_eval = self.evaluate(self.test_problems)
+            if step % log_every == 0:
+                print(f"[baseline step {step}] loss={loss.item():.4f}")
+
+            if self._should_eval(step=step, log_every=log_every):
+                eval_train_set = self._maybe_subsample(self.train_problems, self.eval_train_max_samples)
+                eval_test_set = self._maybe_subsample(self.test_problems, self.eval_test_max_samples)
+
+                train_eval = self.evaluate(eval_train_set)
+                test_eval = self.evaluate(eval_test_set)
 
                 self.history["step"].append(step)
                 self.history["loss"].append(float(loss.item()))
@@ -193,12 +229,15 @@ class BackpropTrainer:
                 self.history["test_token_accuracy"].append(test_eval.token_accuracy)
                 self.history["train_sequence_exact_match"].append(train_eval.sequence_exact_match)
                 self.history["test_sequence_exact_match"].append(test_eval.sequence_exact_match)
+                self.history["train_eval_size"].append(len(eval_train_set))
+                self.history["test_eval_size"].append(len(eval_test_set))
 
                 print(
                     f"[baseline step {step}] "
                     f"loss={loss.item():.4f} "
                     f"train_exact={train_eval.sequence_exact_match:.3f} "
-                    f"test_exact={test_eval.sequence_exact_match:.3f}"
+                    f"test_exact={test_eval.sequence_exact_match:.3f} "
+                    f"(eval_sizes train={len(eval_train_set)} test={len(eval_test_set)})"
                 )
 
             if step % self.checkpoint_every == 0:
