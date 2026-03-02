@@ -39,15 +39,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", type=str, default="mod5", choices=["mod5", "coverage", "random"])
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--test-size", type=int, default=20)
+    parser.add_argument("--run-tag", type=str, default=None, help="Checkpoint run tag (defaults to split-based tag)")
     return parser.parse_args()
 
 
-def resolve_checkpoint_path(explicit: str | None, checkpoint_dir: str, mode: str) -> Path:
+def resolve_checkpoint_path(explicit: str | None, checkpoint_dir: str, mode: str, run_tag: str | None) -> Path:
     if explicit is not None:
         return Path(explicit)
-    path = latest_checkpoint(checkpoint_dir, mode)
+
+    path = latest_checkpoint(checkpoint_dir, mode, run_tag=run_tag)
+    if path is None and run_tag is not None:
+        # Backward compatibility for older checkpoints without run tags.
+        path = latest_checkpoint(checkpoint_dir, mode, run_tag=None)
     if path is None:
-        raise FileNotFoundError(f"No checkpoint found for mode={mode} in {checkpoint_dir}")
+        raise FileNotFoundError(
+            f"No checkpoint found for mode={mode} in {checkpoint_dir} "
+            f"(run_tag={run_tag!r})"
+        )
     return path
 
 
@@ -94,6 +102,8 @@ def main() -> None:
         f"[split] strategy={args.split} train={len(train_problems)} test={len(test_problems)} "
         f"split_seed={args.split_seed}"
     )
+    run_tag = args.run_tag if args.run_tag is not None else f"{args.split}_s{args.split_seed}"
+    print(f"[run] run_tag={run_tag}")
     coverage = summarize_answer_token_coverage(
         train_problems=train_problems,
         test_problems=test_problems,
@@ -105,9 +115,24 @@ def main() -> None:
         for idx, missing_tokens in enumerate(missing):
             print(f"  position_{idx}: {missing_tokens}")
 
-    baseline_ckpt_path = resolve_checkpoint_path(args.baseline_checkpoint, args.checkpoint_dir, "baseline")
-    disc_ckpt_path = resolve_checkpoint_path(args.discriminative_checkpoint, args.checkpoint_dir, "discriminative")
-    ar_ckpt_path = resolve_checkpoint_path(args.autoregressive_checkpoint, args.checkpoint_dir, "autoregressive")
+    baseline_ckpt_path = resolve_checkpoint_path(
+        args.baseline_checkpoint,
+        args.checkpoint_dir,
+        "baseline",
+        run_tag=run_tag,
+    )
+    disc_ckpt_path = resolve_checkpoint_path(
+        args.discriminative_checkpoint,
+        args.checkpoint_dir,
+        "discriminative",
+        run_tag=run_tag,
+    )
+    ar_ckpt_path = resolve_checkpoint_path(
+        args.autoregressive_checkpoint,
+        args.checkpoint_dir,
+        "autoregressive",
+        run_tag=run_tag,
+    )
 
     baseline_ckpt = load_checkpoint(baseline_ckpt_path, map_location=args.device)
     disc_ckpt = load_checkpoint(disc_ckpt_path, map_location=args.device)
@@ -160,6 +185,16 @@ def main() -> None:
     disc_test_good = disc_trainer.evaluate_goodness(test_problems, causal=False)
     disc_train_log = disc_trainer.evaluate_logits(train_problems)
     disc_test_log = disc_trainer.evaluate_logits(test_problems)
+    disc_train_log_diag = disc_trainer.evaluate_logits_detailed(
+        train_problems,
+        top_k=5,
+        collect_examples=False,
+    )
+    disc_test_log_diag = disc_trainer.evaluate_logits_detailed(
+        test_problems,
+        top_k=5,
+        collect_examples=False,
+    )
 
     ar_train_logits = ar_trainer.evaluate_logits(train_problems)
     ar_test_logits = ar_trainer.evaluate_logits(test_problems)
@@ -262,6 +297,7 @@ def main() -> None:
             "discriminative": str(disc_ckpt_path),
             "autoregressive": str(ar_ckpt_path),
         },
+        "run_tag": run_tag,
         "baseline": {
             "train_token_accuracy": baseline_train.token_accuracy,
             "train_sequence_exact_match": baseline_train.sequence_exact_match,
@@ -277,6 +313,9 @@ def main() -> None:
             "goodness_test_candidate_ranking_accuracy": disc_test_good.candidate_ranking_accuracy,
             "logit_train_sequence_exact_match": disc_train_log.sequence_exact_match,
             "logit_test_sequence_exact_match": disc_test_log.sequence_exact_match,
+            "logit_train_mean_correct_rank": disc_train_log_diag["mean_correct_rank"],
+            "logit_test_mean_correct_rank": disc_test_log_diag["mean_correct_rank"],
+            "logit_test_per_sum_accuracy": disc_test_log_diag["per_sum_accuracy"],
         },
         "autoregressive": {
             "logit_train_token_accuracy": ar_train_logits.token_accuracy,

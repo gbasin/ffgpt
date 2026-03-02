@@ -19,7 +19,7 @@ from .data import (
     train_test_split,
 )
 from .model import BaselineTransformer
-from .utils import capture_rng_states, save_checkpoint
+from .utils import build_checkpoint_prefix, capture_rng_states, save_checkpoint
 
 
 @dataclass
@@ -51,6 +51,7 @@ class BackpropTrainer:
         eval_test_max_samples: int | None = None,
         eval_at_step_one: bool = True,
         eval_seed: int = 12345,
+        run_tag: str | None = None,
     ) -> None:
         self.model = model
         self.vocab = vocab
@@ -80,6 +81,8 @@ class BackpropTrainer:
         self.eval_test_max_samples = int(eval_test_max_samples) if eval_test_max_samples is not None else None
         self.eval_at_step_one = bool(eval_at_step_one)
         self.eval_rng = random.Random(eval_seed)
+        self.run_tag = run_tag
+        self.checkpoint_prefix = build_checkpoint_prefix(mode="baseline", run_tag=run_tag)
 
         self.model.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
@@ -178,7 +181,7 @@ class BackpropTrainer:
         )
 
     def _save_checkpoint(self, step: int) -> Path:
-        ckpt_path = self.checkpoint_dir / f"baseline_step{step}.pt"
+        ckpt_path = self.checkpoint_dir / f"{self.checkpoint_prefix}_step{step}.pt"
         state: dict[str, Any] = {
             "mode": "baseline",
             "step": step,
@@ -193,6 +196,8 @@ class BackpropTrainer:
             "eval_train_max_samples": self.eval_train_max_samples,
             "eval_test_max_samples": self.eval_test_max_samples,
             "eval_at_step_one": self.eval_at_step_one,
+            "run_tag": self.run_tag,
+            "checkpoint_prefix": self.checkpoint_prefix,
             "rng_states": capture_rng_states(),
         }
         return save_checkpoint(ckpt_path, state)

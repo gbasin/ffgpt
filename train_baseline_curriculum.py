@@ -59,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-train-max-samples", type=int, default=None)
     parser.add_argument("--eval-test-max-samples", type=int, default=None)
     parser.add_argument("--no-eval-step-one", action="store_true")
+    parser.add_argument("--run-tag", type=str, default=None, help="Optional checkpoint suffix tag")
     parser.add_argument("--device", type=str, default="cpu")
 
     parser.add_argument("--d-model", type=int, default=64)
@@ -126,6 +127,7 @@ def main() -> None:
         stage_answer_max = max_sum_for_operand_digits(digits)
 
         stage_ckpt_dir = ensure_dir(Path(args.checkpoint_dir) / f"d{digits}")
+        run_tag = args.run_tag if args.run_tag is not None else f"d{digits}_stage{stage_idx}"
 
         trainer = BackpropTrainer(
             model=model,
@@ -145,6 +147,7 @@ def main() -> None:
             eval_train_max_samples=args.eval_train_max_samples,
             eval_test_max_samples=args.eval_test_max_samples,
             eval_at_step_one=not args.no_eval_step_one,
+            run_tag=run_tag,
         )
 
         result = trainer.train(log_every=args.log_every)

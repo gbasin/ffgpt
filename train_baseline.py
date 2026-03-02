@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", type=str, default="mod5", choices=["mod5", "coverage", "random"])
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--test-size", type=int, default=20)
+    parser.add_argument("--run-tag", type=str, default=None, help="Optional checkpoint suffix tag")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--d-model", type=int, default=64)
     parser.add_argument("--n-heads", type=int, default=2)
@@ -71,6 +72,8 @@ def main() -> None:
         f"[split] strategy={args.split} train={len(train_problems)} test={len(test_problems)} "
         f"split_seed={args.split_seed}"
     )
+    run_tag = args.run_tag if args.run_tag is not None else f"{args.split}_s{args.split_seed}"
+    print(f"[run] run_tag={run_tag}")
     coverage = summarize_answer_token_coverage(
         train_problems=train_problems,
         test_problems=test_problems,
@@ -109,6 +112,7 @@ def main() -> None:
         eval_train_max_samples=args.eval_train_max_samples,
         eval_test_max_samples=args.eval_test_max_samples,
         eval_at_step_one=not args.no_eval_step_one,
+        run_tag=run_tag,
     )
 
     result = trainer.train(log_every=args.log_every)

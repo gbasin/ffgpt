@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 
 from ffgpt import (
     FFDiscriminativeTrainer,
@@ -28,12 +30,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", type=str, default="mod5", choices=["mod5", "coverage", "random"])
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--test-size", type=int, default=20)
+    parser.add_argument("--run-tag", type=str, default=None, help="Optional checkpoint suffix tag")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--d-model", type=int, default=64)
     parser.add_argument("--n-heads", type=int, default=2)
     parser.add_argument("--n-blocks", type=int, default=2)
     parser.add_argument("--mlp-hidden", type=int, default=256)
     parser.add_argument("--threshold-momentum", type=float, default=0.9)
+    parser.add_argument("--logit-aux-weight", type=float, default=1.0)
+    parser.add_argument("--diagnose-logits", action="store_true")
+    parser.add_argument("--diagnose-top-k", type=int, default=5)
+    parser.add_argument("--diagnose-max-examples", type=int, default=20)
+    parser.add_argument("--diagnose-output", type=str, default=None)
     parser.add_argument(
         "--near-miss-start-step",
         type=int,
@@ -86,6 +94,8 @@ def main() -> None:
         f"[split] strategy={args.split} train={len(train_problems)} test={len(test_problems)} "
         f"split_seed={args.split_seed}"
     )
+    run_tag = args.run_tag if args.run_tag is not None else f"{args.split}_s{args.split_seed}"
+    print(f"[run] run_tag={run_tag}")
     coverage = summarize_answer_token_coverage(
         train_problems=train_problems,
         test_problems=test_problems,
@@ -120,10 +130,12 @@ def main() -> None:
         checkpoint_every=args.checkpoint_every,
         checkpoint_dir=args.checkpoint_dir,
         threshold_momentum=args.threshold_momentum,
+        logit_aux_weight=args.logit_aux_weight,
         near_miss_start_step=near_miss_start_step,
         near_miss_offsets=near_miss_offsets,
         device=args.device,
         seed=args.seed,
+        run_tag=run_tag,
     )
 
     result = trainer.train(log_every=args.log_every)
@@ -144,6 +156,39 @@ def main() -> None:
     print("\nDiscriminative FF final metrics (logit inference)")
     print(f"train sequence_exact_match={train_log.sequence_exact_match:.4f}")
     print(f"test sequence_exact_match={test_log.sequence_exact_match:.4f}")
+
+    if args.diagnose_logits:
+        train_diag = trainer.evaluate_logits_detailed(
+            train_problems,
+            top_k=args.diagnose_top_k,
+            collect_examples=True,
+            max_examples=args.diagnose_max_examples,
+        )
+        test_diag = trainer.evaluate_logits_detailed(
+            test_problems,
+            top_k=args.diagnose_top_k,
+            collect_examples=True,
+            max_examples=args.diagnose_max_examples,
+        )
+
+        print("\nDiscriminative logit diagnostics")
+        print(f"train mean_correct_rank={train_diag['mean_correct_rank']:.3f}")
+        print(f"test mean_correct_rank={test_diag['mean_correct_rank']:.3f}")
+        print(f"test per_sum_accuracy={test_diag['per_sum_accuracy']}")
+
+        diagnostics = {
+            "run_tag": run_tag,
+            "train": train_diag,
+            "test": test_diag,
+        }
+        output_path = (
+            Path(args.diagnose_output)
+            if args.diagnose_output is not None
+            else Path(args.checkpoint_dir) / f"discriminative_{run_tag}_logit_diagnostics.json"
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
+        print(f"saved_diagnostics={output_path}")
 
 
 if __name__ == "__main__":

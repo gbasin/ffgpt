@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import random
+import re
 from typing import Any
 
 import numpy as np
@@ -52,8 +53,21 @@ def load_checkpoint(path: str | Path, map_location: str | torch.device = "cpu") 
     return torch.load(Path(path), map_location=map_location, weights_only=False)
 
 
-def latest_checkpoint(checkpoint_dir: str | Path, mode: str) -> Path | None:
+def sanitize_run_tag(run_tag: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", run_tag.strip())
+    cleaned = cleaned.strip("_.-")
+    return cleaned or "run"
+
+
+def build_checkpoint_prefix(mode: str, run_tag: str | None = None) -> str:
+    if run_tag is None:
+        return mode
+    return f"{mode}_{sanitize_run_tag(run_tag)}"
+
+
+def latest_checkpoint(checkpoint_dir: str | Path, mode: str, run_tag: str | None = None) -> Path | None:
     ckpt_dir = Path(checkpoint_dir)
+
     def step_key(path: Path) -> int:
         stem = path.stem
         marker = "_step"
@@ -64,7 +78,8 @@ def latest_checkpoint(checkpoint_dir: str | Path, mode: str) -> Path | None:
         except ValueError:
             return -1
 
-    matches = sorted(ckpt_dir.glob(f"{mode}_step*.pt"), key=step_key)
+    prefix = build_checkpoint_prefix(mode=mode, run_tag=run_tag)
+    matches = sorted(ckpt_dir.glob(f"{prefix}_step*.pt"), key=step_key)
     if not matches:
         return None
     return matches[-1]
