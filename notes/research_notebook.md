@@ -148,3 +148,21 @@
 - Important caveat surfaced by instrumentation:
   - test answer position 3 tokens (`0..9`) are completely missing in train targets for `2->3` (new answer digit position).
   - This is a very hard extrapolation regime; low exact-match for all models is expected.
+
+### Entry 19
+- Deeper train-behavior debug on `2->3` OOD run (FF-AR default) to test “is FF random on train?”:
+  - FF-AR train token accuracy is not random (`~0.666`), but train exact remains low (`~0.089`).
+  - Position-wise train answer-token accuracy:
+    - pos0 `~0.864`
+    - pos1 `~0.311`  <- main failure
+    - pos2 `~0.542`
+    - pos3 `~0.999` (PAD)
+  - Baseline on same setup is much stronger (e.g., pos1 `~0.968`, train exact `~0.917`).
+- Interpretation: FF-AR is not random; it underfits structured digit generation (especially the second answer digit), suggesting an optimization/objective mismatch rather than pure data-pipeline failure.
+
+### Entry 20
+- Targeted ablation: remove goodness auxiliary pressure during FF-AR training (`goodness_aux_weight=0.0`) in `2->3` OOD setup:
+  - FF-AR default (`aux=1.0`): train exact `0.0898`, test exact `0.0020`
+  - FF-AR no-aux (`aux=0.0`): train exact `0.1055`, test exact `0.0039`
+  - FF-AR no-aux + heads+weighted: train exact `0.0859`, test exact `0.0020`
+- Takeaway: goodness auxiliary appears to interfere with token-learning in this regime; removing it helps somewhat, but FF remains far below baseline.
