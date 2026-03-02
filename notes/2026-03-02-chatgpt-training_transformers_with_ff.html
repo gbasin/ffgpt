@@ -1,0 +1,3149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Training transformers with FF</title>
+  <style>:root {
+  --color-bg: #f8fafc;
+  --color-bg-alt: #ffffff;
+  --color-text: #0f172a;
+  --color-text-muted: #64748b;
+  --color-text-subtle: #94a3b8;
+  --color-border: #e2e8f0;
+  --color-border-hover: #cbd5e1;
+  --color-accent: #6366f1;
+  --color-accent-light: #818cf8;
+  --color-accent-bg: rgba(99, 102, 241, 0.08);
+  --color-success: #10b981;
+  --color-code-bg: #1e293b;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 40px rgba(15, 23, 42, 0.12);
+  --shadow-xl: 0 24px 64px rgba(15, 23, 42, 0.16);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, "Roboto Mono", "Ubuntu Monospace", "Lucida Console", monospace;
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0f172a;
+    --color-bg-alt: #1e293b;
+    --color-text: #f1f5f9;
+    --color-text-muted: #94a3b8;
+    --color-text-subtle: #64748b;
+    --color-border: #334155;
+    --color-border-hover: #475569;
+    --color-accent: #818cf8;
+    --color-accent-light: #a5b4fc;
+    --color-accent-bg: rgba(129, 140, 248, 0.12);
+    --color-code-bg: #0f172a;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.4);
+    --shadow-xl: 0 24px 64px rgba(0, 0, 0, 0.5);
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--color-text);
+  background: var(--color-bg);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.page-wrapper {
+  position: relative;
+  min-height: 100vh;
+  padding: clamp(24px, 5vw, 64px);
+}
+.page-wrapper::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 10% 0%, var(--color-accent-bg), transparent 50%),
+    radial-gradient(ellipse 60% 50% at 90% 10%, rgba(45, 212, 191, 0.06), transparent 40%),
+    radial-gradient(ellipse 50% 80% at 50% 100%, rgba(251, 146, 60, 0.04), transparent 50%);
+  pointer-events: none;
+  z-index: -1;
+}
+.container {
+  max-width: 860px;
+  margin: 0 auto;
+  position: relative;
+}
+h1, h2, h3, h4, h5, h6 {
+  color: var(--color-text);
+  line-height: 1.3;
+  margin: 0 0 0.5em;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+h1 {
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin-bottom: 0.75em;
+}
+h2 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 2.5em;
+  margin-bottom: 1em;
+  padding-bottom: 0.5em;
+  border-bottom: 1px solid var(--color-border);
+}
+h2::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 1em;
+  background: var(--color-accent);
+  border-radius: 2px;
+  margin-right: 0.75em;
+  vertical-align: middle;
+}
+h3 { font-size: 1.25rem; margin-top: 1.75em; }
+h4 { font-size: 1.125rem; margin-top: 1.5em; }
+p {
+  margin: 0 0 1.25em;
+  color: var(--color-text);
+}
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color var(--transition-fast);
+}
+a:hover {
+  color: var(--color-accent-light);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+code, pre {
+  font-family: var(--font-mono);
+  font-feature-settings: "calt" 1, "liga" 1, "ss01" 1;
+}
+code {
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
+  padding: 0.2em 0.45em;
+  border-radius: var(--radius-sm);
+  font-size: 0.875em;
+  font-weight: 500;
+}
+.code-block {
+  position: relative;
+  margin: 1.5em 0;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-lg);
+  background: var(--color-code-bg);
+}
+.code-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.code-dots {
+  display: flex;
+  gap: 6px;
+}
+.code-dots span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+}
+.code-dots span:nth-child(1) { background: #ff5f57; }
+.code-dots span:nth-child(2) { background: #febc2e; }
+.code-dots span:nth-child(3) { background: #28c840; }
+.code-lang {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+pre {
+  background: transparent;
+  color: #e2e8f0;
+  padding: 56px 20px 20px;
+  overflow: auto;
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.7;
+}
+pre code { background: none; padding: 0; color: inherit; }
+blockquote {
+  margin: 1.5em 0;
+  padding: 1em 1.25em;
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-accent-bg);
+  color: var(--color-text);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  font-style: italic;
+}
+blockquote p:last-child { margin-bottom: 0; }
+table {
+  border-collapse: collapse;
+  margin: 1.5em 0;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  background: var(--color-bg-alt);
+}
+th, td {
+  padding: 12px 16px;
+  border: 1px solid var(--color-border);
+  text-align: left;
+}
+th {
+  background: var(--color-accent-bg);
+  font-weight: 600;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+}
+tr:hover { background: var(--color-accent-bg); }
+ul, ol {
+  padding-left: 1.5em;
+  margin: 1em 0;
+}
+li { margin: 0.5em 0; }
+li::marker { color: var(--color-accent); }
+hr {
+  border: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--color-border), transparent);
+  margin: 3em 0;
+}
+.article {
+  background: var(--color-bg-alt);
+  padding: clamp(28px, 5vw, 48px);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-xl);
+  position: relative;
+  overflow: hidden;
+}
+.article::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--color-accent), #06b6d4, #10b981);
+}
+.header {
+  margin-bottom: 2em;
+  padding-bottom: 1.5em;
+  border-bottom: 1px solid var(--color-border);
+}
+.meta-row {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 1em;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  background: var(--color-accent-bg);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  transition: all var(--transition-fast);
+}
+.pill:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
+}
+.pill a {
+  color: inherit;
+  font-weight: inherit;
+}
+.toc {
+  margin: 0 0 2em;
+  padding: 20px 24px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+.toc-title {
+  margin: 0 0 0.75em;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+.toc ul { margin: 0; padding-left: 0; list-style: none; }
+.toc li { margin: 0.4em 0; }
+.toc a {
+  color: var(--color-text-muted);
+  font-size: 0.9375rem;
+  transition: color var(--transition-fast);
+}
+.toc a:hover { color: var(--color-accent); }
+.message { margin-bottom: 2em; }
+.message:last-child { margin-bottom: 0; }
+.hljs { color: #e2e8f0; background: transparent; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-link { color: #c4b5fd; }
+.hljs-function .hljs-title, .hljs-title.class_, .hljs-title.function_ { color: #67e8f9; }
+.hljs-attr, .hljs-name, .hljs-tag { color: #7dd3fc; }
+.hljs-string, .hljs-meta .hljs-string { color: #a5f3c4; }
+.hljs-number, .hljs-regexp, .hljs-variable { color: #fda4af; }
+.hljs-built_in, .hljs-builtin-name { color: #fcd34d; }
+.hljs-comment, .hljs-quote { color: #64748b; font-style: italic; }
+.hljs-addition { color: #4ade80; background: rgba(74, 222, 128, 0.1); }
+.hljs-deletion { color: #f87171; background: rgba(248, 113, 113, 0.1); }
+.footer {
+  margin-top: 3em;
+  padding-top: 1.5em;
+  border-top: 1px solid var(--color-border);
+  text-align: center;
+  color: var(--color-text-subtle);
+  font-size: 0.875rem;
+}
+.scroll-top {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  visibility: hidden;
+  transition: all var(--transition-base);
+  box-shadow: var(--shadow-lg);
+}
+.scroll-top.visible { opacity: 1; visibility: visible; }
+.scroll-top:hover { transform: translateY(-2px); box-shadow: var(--shadow-xl); }
+@media print {
+  body { background: white !important; color: black !important; padding: 24px !important; }
+  .page-wrapper::before { display: none; }
+  .article { box-shadow: none !important; border: 1px solid #e5e7eb !important; }
+  .article::before { display: none; }
+  pre { page-break-inside: avoid; background: #f1f5f9 !important; color: #1e293b !important; }
+  h2, h3 { page-break-after: avoid; color: black !important; }
+  .scroll-top { display: none !important; }
+  a { color: #2563eb !important; }
+}
+@media (max-width: 640px) {
+  .article { padding: 20px; border-radius: var(--radius-lg); }
+  .meta-row { flex-direction: column; align-items: flex-start; }
+  .pill { font-size: 0.75rem; }
+  pre { font-size: 0.8rem; padding: 48px 16px 16px; }
+}</style>
+</head>
+<body>
+  <div class="page-wrapper">
+    <div class="container">
+      <article class="article">
+        <header class="header">
+          <div class="meta-row">
+            <span class="pill">🔗 <a href="https:&#47;&#47;chatgpt.com&#47;share&#47;69a5dec1-de08-8013-8a1f-22944ea5d3d7" target="_blank" rel="noreferrer noopener">Source</a></span>
+            <span class="pill">📅 2026-03-02</span>
+          </div>
+          <h1>Training transformers with FF</h1>
+        </header>
+        <div class="toc">
+    <div class="toc-title">Contents</div>
+    <ul>
+      <li style="margin-left:0px"><a href="#user">User</a></li>
+<li style="margin-left:0px"><a href="#assistant">Assistant</a></li>
+<li style="margin-left:0px"><a href="#what-breaks-when-you-naively-port-forwardforward-to-transformers">What breaks when you naively port Forward–Forward to Transformers</a></li>
+<li style="margin-left:0px"><a href="#a-strong-recipe-collaborative-ln-compatible-globally-structured-negatives">A strong recipe: Collaborative + LN-compatible + globally-structured negatives</a></li>
+<li style="margin-left:16px"><a href="#1-architecture-constraints-that-make-ff-work-in-a-transformer">1) Architecture constraints that make FF work in a Transformer</a></li>
+<li style="margin-left:16px"><a href="#2-positivenegative-construction-that-forces-global-structure">2) Positive&#47;negative construction that forces global structure</a></li>
+<li style="margin-left:16px"><a href="#3-layer-local-losses-that-dont-collapse-early-layers">3) Layer-local losses that don’t collapse early layers</a></li>
+<li style="margin-left:16px"><a href="#4-add-collaboration-without-backprop-global-goodness-injection">4) Add collaboration without backprop: “global goodness injection”</a></li>
+<li style="margin-left:0px"><a href="#preventing-backprop-like-entanglement-inside-ff-training">Preventing “backprop-like entanglement” inside FF training</a></li>
+<li style="margin-left:16px"><a href="#a-headfeature-group-specialization-pressure">A) Head&#47;feature-group specialization pressure</a></li>
+<li style="margin-left:16px"><a href="#b-keep-ff-pure-dont-do-end-to-end-bp-fine-tuning">B) Keep FF “pure”: don’t do end-to-end BP fine-tuning</a></li>
+<li style="margin-left:0px"><a href="#minimal-pseudo-algorithm-blockwise-collaborative-globally-hard-negatives">Minimal pseudo-algorithm (blockwise, collaborative, globally-hard negatives)</a></li>
+<li style="margin-left:0px"><a href="#notes-specific-to-transformer-as-an-llm-if-thats-your-intent">Notes specific to “Transformer as an LLM” (if that’s your intent)</a></li>
+<li style="margin-left:0px"><a href="#the-shortest-best-way-summary">The shortest “best way” summary</a></li>
+<li style="margin-left:0px"><a href="#user-1">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-1">Assistant</a></li>
+<li style="margin-left:0px"><a href="#1-recommended-interleaved-blockwise-training-all-blocks-every-step">1) Recommended: interleaved blockwise training (all blocks, every step)</a></li>
+<li style="margin-left:16px"><a href="#what-this-means-concretely">What this means concretely</a></li>
+<li style="margin-left:16px"><a href="#minimal-pseudocode-sketch">Minimal pseudocode sketch</a></li>
+<li style="margin-left:0px"><a href="#2-if-you-use-collaborativeglobal-goodness-two-phase-per-step-still-not-sequential-training">2) If you use “collaborative&#47;global goodness”: two-phase per step (still not sequential training)</a></li>
+<li style="margin-left:16px"><a href="#two-phase-pattern">Two-phase pattern</a></li>
+<li style="margin-left:0px"><a href="#3-optional-greedy-sequential-train-in-order-freezing-earlier-blocks">3) Optional: greedy sequential (train in order, freezing earlier blocks)</a></li>
+<li style="margin-left:0px"><a href="#so-the-direct-answer">So the direct answer</a></li>
+<li style="margin-left:0px"><a href="#one-implementation-detail-that-matters">One implementation detail that matters</a></li>
+<li style="margin-left:0px"><a href="#user-2">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-2">Assistant</a></li>
+<li style="margin-left:0px"><a href="#most-relevant-forward-forward-papers-to-review-with-an-eye-toward-transformers">Most relevant Forward-Forward papers to review (with an eye toward Transformers)</a></li>
+<li style="margin-left:16px"><a href="#1-original-baseline-forward-forward">1) Original &#47; baseline Forward-Forward</a></li>
+<li style="margin-left:16px"><a href="#2-fixing-the-layers-dont-collaborate-problem-directly-relevant-to-your-concern">2) Fixing the “layers don’t collaborate” problem (directly relevant to your concern)</a></li>
+<li style="margin-left:16px"><a href="#3-better-negatives-more-stable-training-important-for-anything-beyond-toy-tasks">3) Better negatives &#47; more stable training (important for anything beyond toy tasks)</a></li>
+<li style="margin-left:16px"><a href="#4-scalingdepth-and-goodness-design">4) Scaling&#47;depth and “goodness” design</a></li>
+<li style="margin-left:0px"><a href="#has-anyone-tried-transformers-with-ff-and-what-kind">“Has anyone tried Transformers with FF?” (and what kind)</a></li>
+<li style="margin-left:16px"><a href="#vision-transformers-closest-clean-transformer-architecture-ff-work">Vision Transformers (closest “clean” Transformer-architecture FF work)</a></li>
+<li style="margin-left:16px"><a href="#transformers-for-nlp-classification-not-autoregressive-generation-but-nlp-transformers-ff">Transformers for NLP classification (not autoregressive generation, but NLP + Transformers + FF)</a></li>
+<li style="margin-left:0px"><a href="#autoregressive-causal-language-models-with-ff-what-exists-as-of-2026-03-02">Autoregressive &#47; causal language models with FF: what exists as of 2026-03-02</a></li>
+<li style="margin-left:16px"><a href="#what-i-found-published-citable">What I found (published &#47; citable)</a></li>
+<li style="margin-left:16px"><a href="#closest-similar-forward-only-methods-actually-used-on-language-models-not-ff-but-highly-relevant">Closest “similar, forward-only” methods actually used on language models (not FF, but highly relevant)</a></li>
+<li style="margin-left:0px"><a href="#do-you-train-each-layer-separately-in-order-or-what-short-concrete-answer">“Do you train each layer separately in order or what?” (short, concrete answer)</a></li>
+<li style="margin-left:0px"><a href="#if-your-target-is-specifically-autoregressive-lm-with-ff-what-to-look-for-in-papers-based-on-what-exists">If your target is specifically “autoregressive LM with FF”: what to look for in papers (based on what exists)</a></li>
+<li style="margin-left:0px"><a href="#user-3">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-3">Assistant</a></li>
+<li style="margin-left:0px"><a href="#what-train-each-layer-separately-means-in-forward-forward">What “train each layer separately” means in Forward-Forward</a></li>
+<li style="margin-left:0px"><a href="#the-most-relevant-papers-to-review-prioritized">The most relevant papers to review (prioritized)</a></li>
+<li style="margin-left:16px"><a href="#core-ff-the-sequencelm-clue-and-warning">Core FF + the sequence&#47;LM clue (and warning)</a></li>
+<li style="margin-left:16px"><a href="#fixing-the-deep-networks-dont-collaborate-failure-mode">Fixing the “deep networks don’t collaborate” failure mode</a></li>
+<li style="margin-left:16px"><a href="#making-ff-train-deeperstabler-goodness-normalization-residuals">Making FF train deeper&#47;stabler (goodness + normalization + residuals)</a></li>
+<li style="margin-left:16px"><a href="#moving-beyond-hand-crafted-negatives">Moving beyond “hand-crafted negatives”</a></li>
+<li style="margin-left:16px"><a href="#ff-but-with-an-explicit-generative-circuit">“FF but with an explicit generative circuit”</a></li>
+<li style="margin-left:16px"><a href="#first-steps-in-nlp-not-language-modeling-yet">First steps in NLP (not language modeling yet)</a></li>
+<li style="margin-left:0px"><a href="#has-anyone-trained-an-autoregressive-gpt-like-lm-with-ff">Has anyone trained an autoregressive GPT-like LM with FF?</a></li>
+<li style="margin-left:0px"><a href="#why-ff-gpt-hasnt-happened-the-concrete-blockers">Why “FF GPT” hasn’t happened (the concrete blockers)</a></li>
+<li style="margin-left:16px"><a href="#1-the-label-space-is-enormous-vocab-and-ff-style-inferencetraining-can-be-label-iterative">1) The label space is enormous (vocab), and FF-style inference&#47;training can be _label-iterative_</a></li>
+<li style="margin-left:16px"><a href="#2-deep-layer-usefulnesscollaboration-is-already-fragile-in-ff">2) Deep-layer usefulness&#47;collaboration is already fragile in FF</a></li>
+<li style="margin-left:16px"><a href="#3-negatives-are-easy-to-define-for-tokens-but-hard-to-make-informative-at-scale">3) Negatives are easy to define for tokens, but hard to make _informative_ at scale</a></li>
+<li style="margin-left:16px"><a href="#4-sequential-learning-instability-shows-up-early">4) Sequential learning instability shows up early</a></li>
+<li style="margin-left:16px"><a href="#5-engineering-reality-the-best-nanogpt-style-codebases-are-backprop-first">5) Engineering reality: the best “nanoGPT-style” codebases are backprop-first</a></li>
+<li style="margin-left:0px"><a href="#a-practical-design-to-train-an-autoregressive-generative-lm-with-ff-like-learning">A practical design to train an autoregressive generative LM with FF-like learning</a></li>
+<li style="margin-left:16px"><a href="#core-formulation-conditional-energy-goodness-for-next-token">Core formulation: conditional energy &#47; goodness for next token</a></li>
+<li style="margin-left:16px"><a href="#how-to-keep-it-ff-no-cross-layer-backprop">How to keep it FF (no cross-layer backprop)</a></li>
+<li style="margin-left:16px"><a href="#how-to-preserve-global-characteristics-avoid-layer-collapse">How to preserve _global characteristics_ (avoid “layer collapse”)</a></li>
+<li style="margin-left:16px"><a href="#goodness-choice-and-normalization-important-in-deep-nets">Goodness choice and normalization (important in deep nets)</a></li>
+<li style="margin-left:16px"><a href="#negative-sampling-strategies-that-actually-work-for-lms">Negative sampling strategies that actually work for LMs</a></li>
+<li style="margin-left:16px"><a href="#inference-how-do-you-actually-generate-text">Inference: how do you actually generate text?</a></li>
+<li style="margin-left:0px"><a href="#recommended-experimental-path-nanogpt-scale-but-ff-style">Recommended experimental path (nanoGPT-scale, but FF-style)</a></li>
+<li style="margin-left:16px"><a href="#phase-0-prove-the-mechanics-on-tiny-char-level-lm">Phase 0: prove the mechanics on tiny char-level LM</a></li>
+<li style="margin-left:16px"><a href="#phase-1-fix-deep-layer-collapse-early">Phase 1: fix deep-layer collapse early</a></li>
+<li style="margin-left:16px"><a href="#phase-2-stabilize-deep-training">Phase 2: stabilize deep training</a></li>
+<li style="margin-left:16px"><a href="#phase-3-move-to-subword-vocab-and-real-lm">Phase 3: move to subword vocab and real LM</a></li>
+<li style="margin-left:0px"><a href="#what-i-would-conclude-from-the-literature-in-one-sentence">What I would conclude from the literature, in one sentence</a></li>
+<li style="margin-left:0px"><a href="#user-4">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-4">Assistant</a></li>
+<li style="margin-left:0px"><a href="#1-full-distribution-level-goodness-cross-entropy-kl-on-logits">1) Full distribution-level goodness (cross-entropy &#47; KL on logits)</a></li>
+<li style="margin-left:0px"><a href="#2-ff-style-goodness-on-token-candidates-nce-negative-sampling-sampled-softmax">2) FF-style goodness on _token candidates_ (NCE &#47; negative sampling &#47; sampled softmax)</a></li>
+<li style="margin-left:0px"><a href="#which-one-should-you-do-for-an-autoregressive-ff-like-lm">Which one should you do for an autoregressive FF-like LM?</a></li>
+<li style="margin-left:0px"><a href="#the-important-nuance-for-why-this-isnt-just-a-classifier">The important nuance for “why this isn’t just ‘a classifier’”</a></li>
+<li style="margin-left:0px"><a href="#bottom-line">Bottom line</a></li>
+<li style="margin-left:0px"><a href="#user-5">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-5">Assistant</a></li>
+<li style="margin-left:0px"><a href="#user-6">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-6">Assistant</a></li>
+<li style="margin-left:16px"><a href="#did-hinton-share-code-for-the-sequence-sleep-phase-hard-negative-experiment">Did Hinton share code for the sequence &#47; “sleep-phase” hard-negative experiment?</a></li>
+<li style="margin-left:16px"><a href="#what-exactly-was-the-low-learning-rate-high-momentum-about">What exactly was the “low learning rate &#47; high momentum” about?</a></li>
+<li style="margin-left:16px"><a href="#was-he-already-doing-global-sync-like-we-discussed">Was he “already doing global sync” like we discussed?</a></li>
+<li style="margin-left:16px"><a href="#did-he-already-use-model-based-hard-negatives">Did he already use “model-based hard negatives”?</a></li>
+<li style="margin-left:16px"><a href="#practical-takeaways-for-your-direction">Practical takeaways for your direction</a></li>
+<li style="margin-left:0px"><a href="#user-7">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-7">Assistant</a></li>
+<li style="margin-left:0px"><a href="#goodness-1-pairwise-margin-energy-wins-no-softmax-very-fflike">Goodness 1: Pairwise margin “energy wins” (no softmax, very FF‑like)</a></li>
+<li style="margin-left:0px"><a href="#goodness-2-candidateset-softmax-crossentropy-distributionlevel-but-cheap">Goodness 2: Candidate‑set softmax cross‑entropy (distribution‑level, but cheap)</a></li>
+<li style="margin-left:0px"><a href="#goodness-3-sequencecontinuation-goodness-global-coherence-beyond-one-token">Goodness 3: Sequence&#47;continuation goodness (global coherence beyond one token)</a></li>
+<li style="margin-left:0px"><a href="#how-to-implement-these-in-a-block-local-ff-like-transformer">How to implement these in a block-local FF-like Transformer</a></li>
+<li style="margin-left:0px"><a href="#proposal-mechanism-for-hard-negatives-critical">Proposal mechanism for hard negatives (critical)</a></li>
+<li style="margin-left:0px"><a href="#add-global-sync-without-end-to-end-backprop">Add “global sync” without end-to-end backprop</a></li>
+<li style="margin-left:16px"><a href="#a-cross-layer-distribution-alignment-on-candidate-sets">A) Cross-layer distribution alignment on candidate sets</a></li>
+<li style="margin-left:16px"><a href="#b-global-goodness-offset-collaborative-scalar">B) Global goodness offset (“collaborative” scalar)</a></li>
+<li style="margin-left:0px"><a href="#recommendation-what-to-try-first">Recommendation: what to try first</a></li>
+<li style="margin-left:0px"><a href="#two-design-choices-you-should-decide-early-they-matter">Two design choices you should decide early (they matter)</a></li>
+<li style="margin-left:0px"><a href="#user-8">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-8">Assistant</a></li>
+<li style="margin-left:0px"><a href="#what-breaks-when-you-naively-port-forwardforward-to-transformers-1">What breaks when you naively port Forward–Forward to Transformers</a></li>
+<li style="margin-left:0px"><a href="#a-strong-recipe-collaborative-ln-compatible-globally-structured-negatives-1">A strong recipe: Collaborative + LN-compatible + globally-structured negatives</a></li>
+<li style="margin-left:16px"><a href="#1-architecture-constraints-that-make-ff-work-in-a-transformer-1">1) Architecture constraints that make FF work in a Transformer</a></li>
+<li style="margin-left:16px"><a href="#2-positivenegative-construction-that-forces-global-structure-1">2) Positive&#47;negative construction that forces global structure</a></li>
+<li style="margin-left:16px"><a href="#3-layer-local-losses-that-dont-collapse-early-layers-1">3) Layer-local losses that don’t collapse early layers</a></li>
+<li style="margin-left:16px"><a href="#4-add-collaboration-without-backprop-global-goodness-injection-1">4) Add collaboration without backprop: “global goodness injection”</a></li>
+<li style="margin-left:0px"><a href="#preventing-backprop-like-entanglement-inside-ff-training-1">Preventing “backprop-like entanglement” inside FF training</a></li>
+<li style="margin-left:16px"><a href="#a-headfeature-group-specialization-pressure-1">A) Head&#47;feature-group specialization pressure</a></li>
+<li style="margin-left:16px"><a href="#b-keep-ff-pure-dont-do-end-to-end-bp-fine-tuning-1">B) Keep FF “pure”: don’t do end-to-end BP fine-tuning</a></li>
+<li style="margin-left:0px"><a href="#minimal-pseudo-algorithm-blockwise-collaborative-globally-hard-negatives-1">Minimal pseudo-algorithm (blockwise, collaborative, globally-hard negatives)</a></li>
+<li style="margin-left:0px"><a href="#notes-specific-to-transformer-as-an-llm-if-thats-your-intent-1">Notes specific to “Transformer as an LLM” (if that’s your intent)</a></li>
+<li style="margin-left:0px"><a href="#the-shortest-best-way-summary-1">The shortest “best way” summary</a></li>
+<li style="margin-left:0px"><a href="#user-9">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-9">Assistant</a></li>
+<li style="margin-left:0px"><a href="#1-recommended-interleaved-blockwise-training-all-blocks-every-step-1">1) Recommended: interleaved blockwise training (all blocks, every step)</a></li>
+<li style="margin-left:16px"><a href="#what-this-means-concretely-1">What this means concretely</a></li>
+<li style="margin-left:16px"><a href="#minimal-pseudocode-sketch-1">Minimal pseudocode sketch</a></li>
+<li style="margin-left:0px"><a href="#2-if-you-use-collaborativeglobal-goodness-two-phase-per-step-still-not-sequential-training-1">2) If you use “collaborative&#47;global goodness”: two-phase per step (still not sequential training)</a></li>
+<li style="margin-left:16px"><a href="#two-phase-pattern-1">Two-phase pattern</a></li>
+<li style="margin-left:0px"><a href="#3-optional-greedy-sequential-train-in-order-freezing-earlier-blocks-1">3) Optional: greedy sequential (train in order, freezing earlier blocks)</a></li>
+<li style="margin-left:0px"><a href="#so-the-direct-answer-1">So the direct answer</a></li>
+<li style="margin-left:0px"><a href="#one-implementation-detail-that-matters-1">One implementation detail that matters</a></li>
+<li style="margin-left:0px"><a href="#user-10">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-10">Assistant</a></li>
+<li style="margin-left:0px"><a href="#assistant-11">Assistant</a></li>
+<li style="margin-left:0px"><a href="#most-relevant-forward-forward-papers-to-review-with-an-eye-toward-transformers-1">Most relevant Forward-Forward papers to review (with an eye toward Transformers)</a></li>
+<li style="margin-left:16px"><a href="#1-original-baseline-forward-forward-1">1) Original &#47; baseline Forward-Forward</a></li>
+<li style="margin-left:16px"><a href="#2-fixing-the-layers-dont-collaborate-problem-directly-relevant-to-your-concern-1">2) Fixing the “layers don’t collaborate” problem (directly relevant to your concern)</a></li>
+<li style="margin-left:16px"><a href="#3-better-negatives-more-stable-training-important-for-anything-beyond-toy-tasks-1">3) Better negatives &#47; more stable training (important for anything beyond toy tasks)</a></li>
+<li style="margin-left:16px"><a href="#4-scalingdepth-and-goodness-design-1">4) Scaling&#47;depth and “goodness” design</a></li>
+<li style="margin-left:0px"><a href="#has-anyone-tried-transformers-with-ff-and-what-kind-1">“Has anyone tried Transformers with FF?” (and what kind)</a></li>
+<li style="margin-left:16px"><a href="#vision-transformers-closest-clean-transformer-architecture-ff-work-1">Vision Transformers (closest “clean” Transformer-architecture FF work)</a></li>
+<li style="margin-left:16px"><a href="#transformers-for-nlp-classification-not-autoregressive-generation-but-nlp-transformers-ff-1">Transformers for NLP classification (not autoregressive generation, but NLP + Transformers + FF)</a></li>
+<li style="margin-left:0px"><a href="#autoregressive-causal-language-models-with-ff-what-exists-as-of-2026-03-02-1">Autoregressive &#47; causal language models with FF: what exists as of 2026-03-02</a></li>
+<li style="margin-left:16px"><a href="#what-i-found-published-citable-1">What I found (published &#47; citable)</a></li>
+<li style="margin-left:16px"><a href="#closest-similar-forward-only-methods-actually-used-on-language-models-not-ff-but-highly-relevant-1">Closest “similar, forward-only” methods actually used on language models (not FF, but highly relevant)</a></li>
+<li style="margin-left:0px"><a href="#do-you-train-each-layer-separately-in-order-or-what-short-concrete-answer-1">“Do you train each layer separately in order or what?” (short, concrete answer)</a></li>
+<li style="margin-left:0px"><a href="#if-your-target-is-specifically-autoregressive-lm-with-ff-what-to-look-for-in-papers-based-on-what-exists-1">If your target is specifically “autoregressive LM with FF”: what to look for in papers (based on what exists)</a></li>
+<li style="margin-left:0px"><a href="#user-11">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-12">Assistant</a></li>
+<li style="margin-left:0px"><a href="#assistant-13">Assistant</a></li>
+<li style="margin-left:0px"><a href="#what-train-each-layer-separately-means-in-forward-forward-1">What “train each layer separately” means in Forward-Forward</a></li>
+<li style="margin-left:0px"><a href="#the-most-relevant-papers-to-review-prioritized-1">The most relevant papers to review (prioritized)</a></li>
+<li style="margin-left:16px"><a href="#core-ff-the-sequencelm-clue-and-warning-1">Core FF + the sequence&#47;LM clue (and warning)</a></li>
+<li style="margin-left:16px"><a href="#fixing-the-deep-networks-dont-collaborate-failure-mode-1">Fixing the “deep networks don’t collaborate” failure mode</a></li>
+<li style="margin-left:16px"><a href="#making-ff-train-deeperstabler-goodness-normalization-residuals-1">Making FF train deeper&#47;stabler (goodness + normalization + residuals)</a></li>
+<li style="margin-left:16px"><a href="#moving-beyond-hand-crafted-negatives-1">Moving beyond “hand-crafted negatives”</a></li>
+<li style="margin-left:16px"><a href="#ff-but-with-an-explicit-generative-circuit-1">“FF but with an explicit generative circuit”</a></li>
+<li style="margin-left:16px"><a href="#first-steps-in-nlp-not-language-modeling-yet-1">First steps in NLP (not language modeling yet)</a></li>
+<li style="margin-left:0px"><a href="#has-anyone-trained-an-autoregressive-gpt-like-lm-with-ff-1">Has anyone trained an autoregressive GPT-like LM with FF?</a></li>
+<li style="margin-left:0px"><a href="#why-ff-gpt-hasnt-happened-the-concrete-blockers-1">Why “FF GPT” hasn’t happened (the concrete blockers)</a></li>
+<li style="margin-left:16px"><a href="#1-the-label-space-is-enormous-vocab-and-ff-style-inferencetraining-can-be-label-iterative-1">1) The label space is enormous (vocab), and FF-style inference&#47;training can be _label-iterative_</a></li>
+<li style="margin-left:16px"><a href="#2-deep-layer-usefulnesscollaboration-is-already-fragile-in-ff-1">2) Deep-layer usefulness&#47;collaboration is already fragile in FF</a></li>
+<li style="margin-left:16px"><a href="#3-negatives-are-easy-to-define-for-tokens-but-hard-to-make-informative-at-scale-1">3) Negatives are easy to define for tokens, but hard to make _informative_ at scale</a></li>
+<li style="margin-left:16px"><a href="#4-sequential-learning-instability-shows-up-early-1">4) Sequential learning instability shows up early</a></li>
+<li style="margin-left:16px"><a href="#5-engineering-reality-the-best-nanogpt-style-codebases-are-backprop-first-1">5) Engineering reality: the best “nanoGPT-style” codebases are backprop-first</a></li>
+<li style="margin-left:0px"><a href="#a-practical-design-to-train-an-autoregressive-generative-lm-with-ff-like-learning-1">A practical design to train an autoregressive generative LM with FF-like learning</a></li>
+<li style="margin-left:16px"><a href="#core-formulation-conditional-energy-goodness-for-next-token-1">Core formulation: conditional energy &#47; goodness for next token</a></li>
+<li style="margin-left:16px"><a href="#how-to-keep-it-ff-no-cross-layer-backprop-1">How to keep it FF (no cross-layer backprop)</a></li>
+<li style="margin-left:16px"><a href="#how-to-preserve-global-characteristics-avoid-layer-collapse-1">How to preserve _global characteristics_ (avoid “layer collapse”)</a></li>
+<li style="margin-left:16px"><a href="#goodness-choice-and-normalization-important-in-deep-nets-1">Goodness choice and normalization (important in deep nets)</a></li>
+<li style="margin-left:16px"><a href="#negative-sampling-strategies-that-actually-work-for-lms-1">Negative sampling strategies that actually work for LMs</a></li>
+<li style="margin-left:16px"><a href="#inference-how-do-you-actually-generate-text-1">Inference: how do you actually generate text?</a></li>
+<li style="margin-left:0px"><a href="#recommended-experimental-path-nanogpt-scale-but-ff-style-1">Recommended experimental path (nanoGPT-scale, but FF-style)</a></li>
+<li style="margin-left:16px"><a href="#phase-0-prove-the-mechanics-on-tiny-char-level-lm-1">Phase 0: prove the mechanics on tiny char-level LM</a></li>
+<li style="margin-left:16px"><a href="#phase-1-fix-deep-layer-collapse-early-1">Phase 1: fix deep-layer collapse early</a></li>
+<li style="margin-left:16px"><a href="#phase-2-stabilize-deep-training-1">Phase 2: stabilize deep training</a></li>
+<li style="margin-left:16px"><a href="#phase-3-move-to-subword-vocab-and-real-lm-1">Phase 3: move to subword vocab and real LM</a></li>
+<li style="margin-left:0px"><a href="#what-i-would-conclude-from-the-literature-in-one-sentence-1">What I would conclude from the literature, in one sentence</a></li>
+<li style="margin-left:0px"><a href="#user-12">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-14">Assistant</a></li>
+<li style="margin-left:0px"><a href="#assistant-15">Assistant</a></li>
+<li style="margin-left:0px"><a href="#1-full-distribution-level-goodness-cross-entropy-kl-on-logits-1">1) Full distribution-level goodness (cross-entropy &#47; KL on logits)</a></li>
+<li style="margin-left:0px"><a href="#2-ff-style-goodness-on-token-candidates-nce-negative-sampling-sampled-softmax-1">2) FF-style goodness on _token candidates_ (NCE &#47; negative sampling &#47; sampled softmax)</a></li>
+<li style="margin-left:0px"><a href="#which-one-should-you-do-for-an-autoregressive-ff-like-lm-1">Which one should you do for an autoregressive FF-like LM?</a></li>
+<li style="margin-left:0px"><a href="#the-important-nuance-for-why-this-isnt-just-a-classifier-1">The important nuance for “why this isn’t just ‘a classifier’”</a></li>
+<li style="margin-left:0px"><a href="#bottom-line-1">Bottom line</a></li>
+<li style="margin-left:0px"><a href="#user-13">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-16">Assistant</a></li>
+<li style="margin-left:0px"><a href="#assistant-17">Assistant</a></li>
+<li style="margin-left:0px"><a href="#user-14">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-18">Assistant</a></li>
+<li style="margin-left:0px"><a href="#assistant-19">Assistant</a></li>
+<li style="margin-left:16px"><a href="#did-hinton-share-code-for-the-sequence-sleep-phase-hard-negative-experiment-1">Did Hinton share code for the sequence &#47; “sleep-phase” hard-negative experiment?</a></li>
+<li style="margin-left:16px"><a href="#what-exactly-was-the-low-learning-rate-high-momentum-about-1">What exactly was the “low learning rate &#47; high momentum” about?</a></li>
+<li style="margin-left:16px"><a href="#was-he-already-doing-global-sync-like-we-discussed-1">Was he “already doing global sync” like we discussed?</a></li>
+<li style="margin-left:16px"><a href="#did-he-already-use-model-based-hard-negatives-1">Did he already use “model-based hard negatives”?</a></li>
+<li style="margin-left:16px"><a href="#practical-takeaways-for-your-direction-1">Practical takeaways for your direction</a></li>
+<li style="margin-left:0px"><a href="#user-15">User</a></li>
+<li style="margin-left:0px"><a href="#assistant-20">Assistant</a></li>
+<li style="margin-left:0px"><a href="#assistant-21">Assistant</a></li>
+<li style="margin-left:0px"><a href="#goodness-1-pairwise-margin-energy-wins-no-softmax-very-fflike-1">Goodness 1: Pairwise margin “energy wins” (no softmax, very FF‑like)</a></li>
+<li style="margin-left:0px"><a href="#goodness-2-candidateset-softmax-crossentropy-distributionlevel-but-cheap-1">Goodness 2: Candidate‑set softmax cross‑entropy (distribution‑level, but cheap)</a></li>
+<li style="margin-left:0px"><a href="#goodness-3-sequencecontinuation-goodness-global-coherence-beyond-one-token-1">Goodness 3: Sequence&#47;continuation goodness (global coherence beyond one token)</a></li>
+<li style="margin-left:0px"><a href="#how-to-implement-these-in-a-block-local-ff-like-transformer-1">How to implement these in a block-local FF-like Transformer</a></li>
+<li style="margin-left:0px"><a href="#proposal-mechanism-for-hard-negatives-critical-1">Proposal mechanism for hard negatives (critical)</a></li>
+<li style="margin-left:0px"><a href="#add-global-sync-without-end-to-end-backprop-1">Add “global sync” without end-to-end backprop</a></li>
+<li style="margin-left:16px"><a href="#a-cross-layer-distribution-alignment-on-candidate-sets-1">A) Cross-layer distribution alignment on candidate sets</a></li>
+<li style="margin-left:16px"><a href="#b-global-goodness-offset-collaborative-scalar-1">B) Global goodness offset (“collaborative” scalar)</a></li>
+<li style="margin-left:0px"><a href="#recommendation-what-to-try-first-1">Recommendation: what to try first</a></li>
+<li style="margin-left:0px"><a href="#two-design-choices-you-should-decide-early-they-matter-1">Two design choices you should decide early (they matter)</a></li>
+    </ul>
+  </div>
+        <div class="content">
+          <h1 id="chatgpt-conversation-training-transformers-with-ff">ChatGPT Conversation: Training transformers with FF</h1>
+<p>Source: <a href="https://chatgpt.com/share/69a5dec1-de08-8013-8a1f-22944ea5d3d7">https://chatgpt.com/share/69a5dec1-de08-8013-8a1f-22944ea5d3d7</a><br>
+Retrieved: 2026-03-02T19:03:32.770Z</p>
+<h2 id="user">User</h2>
+<p>Figure out the best way to train a transformer using hintons forward forward so it maintains its global characteristics without falling back to the highly tangled representations encouraged by backprop</p>
+<h2 id="assistant">Assistant</h2>
+<h2 id="what-breaks-when-you-naively-port-forwardforward-to-transformers">What breaks when you naively port Forward–Forward to Transformers</h2>
+<p>Hinton’s Forward–Forward (FF) replaces end-to-end backprop with <em>layer-local</em> objectives trained from two forward passes: a <strong>positive</strong> pass (real/consistent input) and a <strong>negative</strong> pass (corrupted/inconsistent input). Each layer learns to yield <strong>high goodness</strong> on positives and <strong>low goodness</strong> on negatives.</p>
+<p>For Transformers, the main failure modes are:</p>
+<ol>
+<li>
+<p><strong>Inter-layer isolation kills “global” behavior</strong><br>
+Plain FF trains each layer “as if it were the whole model,” so early layers don’t get pressured to produce features that later layers can actually use. This lack of collaboration has been analyzed explicitly, and a simple modification was proposed to inject global information into each layer’s local objective.</p>
+</li>
+<li>
+<p><strong>Normalization collides with classic goodness choices</strong><br>
+If goodness is something like “sum of squared activations,” layer normalization can wipe out the signal (or make it trivial/constant), so you must compute goodness at the right point or redesign it. Hinton notes this directly.<br>
+There are newer “LN-compatible” goodness designs (e.g., mean-goodness + layer norm) intended to make deep FF training stable.</p>
+</li>
+<li>
+<p><strong>Negatives must be <em>globally</em> hard, not just locally noisy</strong><br>
+If negatives are too easy (random garbage), layers learn shortcuts; if they’re too different from data, you don’t learn data structure. Work on self-contrastive FF emphasizes that the <em>quality/structure of negatives</em> is a key limiter and proposes systematic generation from the data distribution.</p>
+</li>
+<li>
+<p><strong>If you “finish” with backprop, you often undo the point</strong><br>
+If you FF-pretrain then do full end-to-end BP fine-tuning, you’ll typically reintroduce the very representation entanglement you’re trying to avoid. One reason FF is interesting here is that FF objectives can yield sparse, ensemble-like internal structure that’s not typically seen with standard BP training.</p>
+</li>
+</ol>
+<hr>
+<h2 id="a-strong-recipe-collaborative-ln-compatible-globally-structured-negatives">A strong recipe: Collaborative + LN-compatible + globally-structured negatives</h2>
+<p>The most defensible “best way” (based on what’s worked in the literature so far) is to combine four ideas:</p>
+<ol>
+<li>
+<p><strong>Blockwise FF (treat each Transformer block as a “layer”)</strong></p>
+</li>
+<li>
+<p><strong>Collaborative FF (inject global goodness into each block’s local objective)</strong></p>
+</li>
+<li>
+<p><strong>LN-compatible goodness (so Transformers don’t trivialize goodness)</strong></p>
+</li>
+<li>
+<p><strong>Negatives that specifically break <em>global coherence</em> while preserving local plausibility</strong></p>
+</li>
+</ol>
+<p>A practical instantiation is:</p>
+<h3 id="1-architecture-constraints-that-make-ff-work-in-a-transformer">1) Architecture constraints that make FF work in a Transformer</h3>
+<p><strong>Use a Pre-LN Transformer</strong> (standard in modern LLMs anyway), but be explicit about <em>where</em> you measure goodness.</p>
+<p>For block lll, you have something like:</p>
+<ul>
+<li>
+<p>ul=LN(xl)u_l = \mathrm{LN}(x_l)ul​=LN(xl​)</p>
+</li>
+<li>
+<p>al=Attnl(ul)a_l = \mathrm{Attn}_l(u_l)al​=Attnl​(ul​), xl′=xl+alx'_l = x_l + a_lxl′​=xl​+al​</p>
+</li>
+<li>
+<p>vl=LN(xl′)v_l = \mathrm{LN}(x'_l)vl​=LN(xl′​)</p>
+</li>
+<li>
+<p>ml=MLPl(vl)m_l = \mathrm{MLP}_l(v_l)ml​=MLPl​(vl​), xl+1=xl′+mlx_{l+1} = x'_l + m_lxl+1​=xl′​+ml​</p>
+</li>
+</ul>
+<p><strong>Key FF requirement:</strong> goodness must be computed on an activation that is not made invariant/constant by LN.</p>
+<p>Two robust options:</p>
+<ul>
+<li>
+<p><strong>Option A (Hinton-style):</strong> compute goodness on <em>pre-LN</em> hidden activities (he explicitly defines goodness using activities “before layer normalization”).</p>
+</li>
+<li>
+<p><strong>Option B (DeeperForward-style):</strong> use <strong>mean goodness</strong> while using LN for the representation stream (decoupling “goodness” from “features”); this is explicitly motivated as fixing scaling + deactivated neuron issues.</p>
+</li>
+</ul>
+<p>For Transformers, Option B is usually easier:</p>
+<ul>
+<li>
+<p>Let HlH_lHl​ be a block-local activation tensor you choose (common: the MLP pre-activation after a ReLU/GELU or an equivalent “post-nonlinearity” state).</p>
+</li>
+<li>
+<p>Define <strong>goodness</strong> as a mean over features (and optionally tokens):</p>
+<p>gl=mean(Hl)g_l = \mathrm{mean}(H_l)gl​=mean(Hl​)</p>
+</li>
+<li>
+<p>Define the <strong>representation passed upward</strong> as the LN-normalized stream (standard Transformer residual stream).</p>
+</li>
+</ul>
+<p>This mirrors the “goodness is mean; features are LN outputs” separation.</p>
+<h3 id="2-positivenegative-construction-that-forces-global-structure">2) Positive/negative construction that forces global structure</h3>
+<p>To preserve “global characteristics,” your negatives must break <em>global</em> constraints while keeping <em>local</em> statistics plausible.</p>
+<p>Use a <strong>mixture of negative types</strong>:</p>
+<ul>
+<li>
+<p><strong>Local-preserving, global-breaking (the important ones):</strong></p>
+<ul>
+<li>
+<p>swap two long spans (A … B → B … A)</p>
+</li>
+<li>
+<p>replace a middle span with one from another sample (in-batch “span transplant”)</p>
+</li>
+<li>
+<p>sentence-order shuffles (for multi-sentence text)</p>
+</li>
+<li>
+<p>entity/attribute swaps (replace all mentions of one entity with another from batch)</p>
+</li>
+</ul>
+</li>
+<li>
+<p><strong>Light local corruption (for robustness, not for global structure):</strong></p>
+<ul>
+<li>
+<p>small token masking/dropout</p>
+</li>
+<li>
+<p>small token substitutions sampled from unigram or same-POS bucket</p>
+</li>
+</ul>
+</li>
+</ul>
+<p>If you want a simple default that avoids bespoke negative generators, borrow the <strong>self-contrastive</strong> pattern: positives/negatives formed directly from the batch rather than a separate negative model.<br>
+(You will still want the <em>span-level</em> variants above if your explicit goal is “global characteristics.”)</p>
+<h3 id="3-layer-local-losses-that-dont-collapse-early-layers">3) Layer-local losses that don’t collapse early layers</h3>
+<p>A plain FF layer loss is “classify positive vs negative from goodness,” using a logistic mapping and a threshold.</p>
+<p>For Transformers, you will usually get better behavior if you add a <strong>contrastive term</strong> at each block in addition to (or replacing) the thresholded goodness classification—this is exactly the direction taken by work extending FF to Vision Transformers using contrastive-inspired losses and a depth-dependent margin to avoid early-layer collapse.</p>
+<p>So for each block lll, compute a pooled representation rlr_lrl​ (e.g., CLS token or mean pooling over tokens). Then use:</p>
+<p><strong>(a) FF goodness classification (local):</strong></p>
+<ul>
+<li>
+<p>gl+g_l^{+}gl+​ from positive sample, gl−g_l^{-}gl−​ from negative</p>
+</li>
+<li>
+<p>logistic probability p=σ(gl−θ)p = \sigma(g_l - \theta)p=σ(gl​−θ)</p>
+</li>
+<li>
+<p>loss:</p>
+<p>LlFF=BCE(p+,1)+BCE(p−,0)\mathcal{L}^{FF}_l = \mathrm{BCE}(p^{+}, 1) + \mathrm{BCE}(p^{-}, 0)LlFF​=BCE(p+,1)+BCE(p−,0)</p>
+</li>
+</ul>
+<p><strong>(b) Contrastive alignment term (optional but recommended):</strong></p>
+<ul>
+<li>
+<p>Use InfoNCE or supervised-contrastive if you have labels</p>
+</li>
+<li>
+<p>If you want to prevent early layers from over-clustering (a known problem), use a <strong>layer-dependent margin</strong> (a “marginal contrastive” idea) so early blocks only learn <em>some</em> similarity, later blocks enforce tighter grouping.</p>
+</li>
+</ul>
+<p>Total:</p>
+<p>Ll=λffLlFF+λctrLlCTR\mathcal{L}_l = \lambda_{ff}\mathcal{L}^{FF}_l + \lambda_{ctr}\mathcal{L}^{CTR}_lLl​=λff​LlFF​+λctr​LlCTR​</p>
+<h3 id="4-add-collaboration-without-backprop-global-goodness-injection">4) Add collaboration without backprop: “global goodness injection”</h3>
+<p>This is the piece that most directly targets your “maintains global characteristics” requirement.</p>
+<p>Layer-collaboration work proposes modifying each layer’s local probability by adding a <strong>stop-gradient global term</strong> based on other layers’ goodness, so each layer optimizes its parameters with awareness of the network-wide state, but still <em>without</em> end-to-end backprop.</p>
+<p>Concretely:</p>
+<ul>
+<li>
+<p>Compute goodness values g1,…,gLg_1,\dots,g_Lg1​,…,gL​ for the current sample (positive or negative).</p>
+</li>
+<li>
+<p>For layer lll, define:</p>
+<p>γl=∑t≠lstopgrad(gt)\gamma_l = \sum_{t\neq l} \mathrm{stopgrad}(g_t)γl​=t=l∑​stopgrad(gt​)</p>
+</li>
+<li>
+<p>Use:</p>
+<p>pl=σ(gl+αγl−θ)p_l = \sigma(g_l + \alpha\gamma_l - \theta)pl​=σ(gl​+αγl​−θ)</p>
+</li>
+<li>
+<p>Then do BCE on plp_lpl​ vs {positive=1, negative=0}.</p>
+</li>
+</ul>
+<p>This gives you a mechanism for global coordination while keeping updates local in the FF sense.</p>
+<hr>
+<h2 id="preventing-backprop-like-entanglement-inside-ff-training">Preventing “backprop-like entanglement” inside FF training</h2>
+<p>Even with FF, a Transformer can learn overly distributed, hard-to-parse features unless you bias it toward modularity. Two pragmatic additions:</p>
+<h3 id="a-headfeature-group-specialization-pressure">A) Head/feature-group specialization pressure</h3>
+<p>A channel-wise competitive learning variant of FF explicitly aims to improve feature partitioning and compositionality (developed for CNNs, but the principle maps cleanly to Transformer “groups” such as heads or MLP channel blocks).</p>
+<p>Transformer adaptation (direct, effective):</p>
+<ul>
+<li>
+<p>Partition the hidden dimension into GGG groups (or treat attention heads as groups).</p>
+</li>
+<li>
+<p>Compute goodness per-group gl,gg_{l,g}gl,g​.</p>
+</li>
+<li>
+<p>Add a mild regularizer that encourages <em>few</em> groups to be strongly active per sample (k-winners / sparsemax-like behavior), which tends to reduce entanglement.</p>
+</li>
+</ul>
+<h3 id="b-keep-ff-pure-dont-do-end-to-end-bp-fine-tuning">B) Keep FF “pure”: don’t do end-to-end BP fine-tuning</h3>
+<p>If you BP-fine-tune all blocks, you’ll typically lose the sparse-ensemble structure that FF objectives can produce. Evidence that FF-trained networks can develop sparse, category-specific ensembles (and that this sparsity pattern differs from typical BP training) supports keeping the training regime consistent if interpretability/modularity is a goal.</p>
+<p>If you must add a supervised head:</p>
+<ul>
+<li>Train <strong>only</strong> a small readout / classifier head with BP and freeze the FF-trained backbone (or use tiny adapters), so you don’t re-entangle the internal representation.</li>
+</ul>
+<hr>
+<h2 id="minimal-pseudo-algorithm-blockwise-collaborative-globally-hard-negatives">Minimal pseudo-algorithm (blockwise, collaborative, globally-hard negatives)</h2>
+<p>For batch XXX:</p>
+<ol>
+<li>Create two versions:</li>
+</ol>
+<ul>
+<li>
+<p>X+X^{+}X+: original / consistent</p>
+</li>
+<li>
+<p>X−X^{-}X−: globally-corrupted but locally plausible (span swap/transplant, etc.)</p>
+</li>
+</ul>
+<ol start="2">
+<li>
+<p>Forward both through the model, but <strong>detach between blocks</strong> so each block’s gradients don’t flow into previous blocks.</p>
+</li>
+<li>
+<p>For each block lll:</p>
+</li>
+</ol>
+<ul>
+<li>
+<p>Extract chosen activation tensor Hl+,Hl−H_l^{+}, H_l^{-}Hl+​,Hl−​</p>
+</li>
+<li>
+<p>Compute goodness gl+=mean(Hl+),  gl−=mean(Hl−)g_l^{+}=\mathrm{mean}(H_l^{+}),\; g_l^{-}=\mathrm{mean}(H_l^{-})gl+​=mean(Hl+​),gl−​=mean(Hl−​) (LN-compatible design)</p>
+</li>
+<li>
+<p>Compute collaboration terms:</p>
+<p>γl+=∑t≠lstopgrad(gt+),γl−=∑t≠lstopgrad(gt−)\gamma_l^{+}=\sum_{t\neq l}\mathrm{stopgrad}(g_t^{+}),\quad \gamma_l^{-}=\sum_{t\neq l}\mathrm{stopgrad}(g_t^{-})γl+​=t=l∑​stopgrad(gt+​),γl−​=t=l∑​stopgrad(gt−​)</p>
+</li>
+<li>
+<p>Local FF loss:</p>
+<p>LlFF=BCE(σ(gl++αγl+−θ),1)+BCE(σ(gl−+αγl−−θ),0)\mathcal{L}^{FF}_l = \mathrm{BCE}(\sigma(g_l^{+}+\alpha\gamma_l^{+}-\theta), 1) + \mathrm{BCE}(\sigma(g_l^{-}+\alpha\gamma_l^{-}-\theta), 0)LlFF​=BCE(σ(gl+​+αγl+​−θ),1)+BCE(σ(gl−​+αγl−​−θ),0)</p>
+</li>
+<li>
+<p>Optional contrastive term on pooled representations with depth-dependent margin (helps prevent early-layer collapse)</p>
+</li>
+<li>
+<p>Update <strong>only block lll</strong>’s parameters.</p>
+</li>
+</ul>
+<p>This retains FF’s local update property while injecting global coordination and forcing global structure via negatives.</p>
+<hr>
+<h2 id="notes-specific-to-transformer-as-an-llm-if-thats-your-intent">Notes specific to “Transformer as an LLM” (if that’s your intent)</h2>
+<p>The literature is much stronger on FF for classification/representation learning and on Transformer-like models in vision than on full-scale autoregressive LLM training with FF. The most direct Transformer evidence I can point to is ViT-focused FF extensions using contrastive losses.</p>
+<p>If you want autoregressive next-token prediction without falling back to BP, the most workable FF-style framing is to treat the model as an <strong>energy/goodness scorer</strong> for (context, candidate next token) and train it with <strong>sampled negatives</strong> (NCE-like), rather than full softmax over the vocabulary. This matches FF’s positive/negative discrimination spirit.<br>
+The practical constraint is inference cost: you need a candidate set (proposal model or retrieval) rather than scoring all vocab tokens.</p>
+<hr>
+<h2 id="the-shortest-best-way-summary">The shortest “best way” summary</h2>
+<p>If your goal is “FF-trained Transformer that stays globally coherent and avoids BP-style entanglement,” the highest-leverage combination is:</p>
+<ul>
+<li>
+<p><strong>Global-coherence negatives</strong> (span-level swaps/transplants, sentence shuffles) + <strong>self-contrastive in-batch negatives</strong></p>
+</li>
+<li>
+<p><strong>Collaborative FF</strong> (stop-gradient global goodness term injected into each block’s local objective)</p>
+</li>
+<li>
+<p><strong>LN-compatible goodness</strong> (e.g., mean-goodness + LN-separated representation stream)</p>
+</li>
+<li>
+<p><strong>Depth-scheduled contrastive pressure</strong> (margin increases with depth) to prevent early blocks collapsing into brittle clusters</p>
+</li>
+<li>
+<p><strong>No end-to-end BP fine-tuning</strong> (or freeze backbone if you add a supervised head), to preserve the sparse/modular structure FF can induce</p>
+</li>
+</ul>
+<p>If you specify the exact setting (encoder-only MLM, decoder-only AR LM, or encoder–decoder), I can pin down: (1) the exact positive/negative construction, (2) where to measure goodness in the block, and (3) the lowest-cost inference scheme consistent with FF.</p>
+<h2 id="user-1">User</h2>
+<p>Do you train each layer separately in order or what</p>
+<h2 id="assistant-1">Assistant</h2>
+<p>You still <em>compute</em> the network in order (block 1 → block 2 → …), but you do <strong>not</strong> have to “train layer 1 to completion, freeze it, then move to layer 2” unless you choose that schedule.</p>
+<p>With Forward–Forward on a Transformer, the most common/usable answer is:</p>
+<ul>
+<li>
+<p><strong>Each block has its own local objective</strong></p>
+</li>
+<li>
+<p>You <strong>update all blocks during training</strong>, but you <strong>block gradients between blocks</strong> (detach/stop‑grad) so no end-to-end backprop happens.</p>
+</li>
+</ul>
+<p>Below are the three practical training schedules, in order of what usually works best.</p>
+<hr>
+<h2 id="1-recommended-interleaved-blockwise-training-all-blocks-every-step">1) Recommended: interleaved blockwise training (all blocks, every step)</h2>
+<p><strong>Idea:</strong> On each minibatch, you do pos/neg forward passes, compute a <em>local loss per block</em>, and update blocks. The key is that the input to each block is <strong>detached</strong>, so gradients do not flow into earlier blocks.</p>
+<h3 id="what-this-means-concretely">What this means concretely</h3>
+<ul>
+<li>
+<p>You run embeddings once to get the initial residual stream.</p>
+</li>
+<li>
+<p>For block</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">ebnf</span></div><pre><code class="hljs language-ebnf"><span class="hljs-attribute">l</span>
+</code></pre></div><p>, you feed</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">scss</span></div><pre><code class="hljs language-scss"><span class="hljs-attribute">x</span><span class="hljs-selector-class">.detach</span>()
+</code></pre></div><p>into the block.</p>
+</li>
+<li>
+<p>You compute block</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">ebnf</span></div><pre><code class="hljs language-ebnf"><span class="hljs-attribute">l</span>
+</code></pre></div><p>’s goodness and local loss from block-local activations.</p>
+</li>
+<li>
+<p>That loss only updates block</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">ebnf</span></div><pre><code class="hljs language-ebnf"><span class="hljs-attribute">l</span>
+</code></pre></div><p>parameters (because the input was detached).</p>
+</li>
+</ul>
+<h3 id="minimal-pseudocode-sketch">Minimal pseudocode sketch</h3>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">css</span></div><pre><code class="hljs language-css">Python# x_pos, x_neg: tokenized positives / negativesh_pos = <span class="hljs-built_in">embed</span>(x_pos)h_neg = <span class="hljs-built_in">embed</span>(x_neg)total_loss = <span class="hljs-number">0</span>for l, block in <span class="hljs-built_in">enumerate</span>(blocks):    h_pos_in = h_pos.<span class="hljs-built_in">detach</span>()    h_neg_in = h_neg.<span class="hljs-built_in">detach</span>()    h_pos, aux_pos = <span class="hljs-built_in">block</span>(h_pos_in, return_goodness_acts=True)    h_neg, aux_neg = <span class="hljs-built_in">block</span>(h_neg_in, return_goodness_acts=True)    g_pos = <span class="hljs-built_in">goodness</span>(aux_pos)   # block-local    g_neg = <span class="hljs-built_in">goodness</span>(aux_neg)    loss_l = <span class="hljs-built_in">ff_loss</span>(g_pos, g_neg)   # BCE / margin / etc.    total_loss = total_loss + loss_ltotal_loss.<span class="hljs-built_in">backward</span>()optimizer.<span class="hljs-built_in">step</span>()optimizer.<span class="hljs-built_in">zero_grad</span>()
+</code></pre></div><p>This is “train all layers at once,” but still strictly <strong>local learning</strong> because every block’s input was detached.</p>
+<hr>
+<h2 id="2-if-you-use-collaborativeglobal-goodness-two-phase-per-step-still-not-sequential-training">2) If you use “collaborative/global goodness”: two-phase per step (still not sequential training)</h2>
+<p>If your block loss uses a term like “other layers’ goodness” (global coordination), you usually want a <strong>two-phase</strong> step so each block can see the other blocks’ goodness values without letting gradients leak.</p>
+<h3 id="two-phase-pattern">Two-phase pattern</h3>
+<p><strong>Phase A (no gradients):</strong> compute goodness values for all blocks on pos/neg.</p>
+<ul>
+<li>
+<p>Cache</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">css</span></div><pre><code class="hljs language-css">g_pos<span class="hljs-selector-attr">[l]</span>
+</code></pre></div><p>,</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">css</span></div><pre><code class="hljs language-css">g_neg<span class="hljs-selector-attr">[l]</span>
+</code></pre></div><p>.</p>
+</li>
+</ul>
+<p><strong>Phase B (with gradients, local):</strong> run blocks again with detached inputs and compute each block’s loss using:</p>
+<ul>
+<li>
+<p>its own</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">ebnf</span></div><pre><code class="hljs language-ebnf"><span class="hljs-attribute">g_l</span>
+</code></pre></div><p>(with grad)</p>
+</li>
+<li>
+<p>other blocks’</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">dust</span></div><pre><code class="hljs language-dust"><span class="language-xml">g_</span><span class="hljs-template-variable">{t≠l}</span><span class="language-xml">
+</span></code></pre></div><p>as <strong>stop-grad cached scalars</strong></p>
+</li>
+</ul>
+<p>This keeps the “global coordination signal” while preserving the FF constraint (no end-to-end BP).</p>
+<hr>
+<h2 id="3-optional-greedy-sequential-train-in-order-freezing-earlier-blocks">3) Optional: greedy sequential (train in order, freezing earlier blocks)</h2>
+<p>This is the “train block 1, freeze it; then block 2; …” approach.</p>
+<p>It can work, but it has downsides for Transformers:</p>
+<ul>
+<li>
+<p>later blocks are forced to adapt to whatever quirks early blocks learned</p>
+</li>
+<li>
+<p>it tends to reduce cross-block coordination unless you add extra mechanisms</p>
+</li>
+</ul>
+<p>I only use this as a stabilization trick when training is collapsing:</p>
+<ul>
+<li>
+<p>train first 2–4 blocks until they produce non-trivial goodness separation</p>
+</li>
+<li>
+<p>then switch to interleaved training for all blocks</p>
+</li>
+</ul>
+<hr>
+<h2 id="so-the-direct-answer">So the direct answer</h2>
+<p>You usually <strong>do not</strong> train each layer “separately in order” to completion.</p>
+<p>You typically:</p>
+<ul>
+<li>
+<p><strong>update every block every step</strong>, but</p>
+</li>
+<li>
+<p><strong>prevent gradients from flowing across blocks</strong> (detach between blocks),<br>
+so each block is trained with its own FF objective while still receiving inputs produced by earlier blocks.</p>
+</li>
+</ul>
+<hr>
+<h2 id="one-implementation-detail-that-matters">One implementation detail that matters</h2>
+<p>There are two clean ways to implement “local updates”:</p>
+<ol>
+<li>
+<p><strong>Single optimizer + one backward on summed local losses</strong><br>
+Works if you detach between blocks. Each block only gets gradients from its own local loss.</p>
+</li>
+<li>
+<p><strong>Per-block optimizers + per-block backward/step</strong><br>
+Lets you step blocks independently (useful if you want different learning rates or schedules per depth). Slightly more bookkeeping.</p>
+</li>
+</ol>
+<p>Both are compatible with “not training in order.”</p>
+<hr>
+<p>If you tell me whether you mean <strong>decoder-only (autoregressive)</strong> vs <strong>encoder-only / masked</strong> Transformer, I can give the exact pos/neg construction and where to tap activations for goodness so the training doesn’t collapse under layer norm.</p>
+<h2 id="user-2">User</h2>
+<p>what are teh most relevant papers for me to review? has anyone tried to do autoregressive or similar language models with FF or similar?</p>
+<h2 id="assistant-2">Assistant</h2>
+<h2 id="most-relevant-forward-forward-papers-to-review-with-an-eye-toward-transformers">Most relevant Forward-Forward papers to review (with an eye toward Transformers)</h2>
+<h3 id="1-original-baseline-forward-forward">1) Original / baseline Forward-Forward</h3>
+<ul>
+<li><strong>Hinton (2022): “The Forward-Forward Algorithm: Some Preliminary Investigations”</strong><br>
+The canonical definition of FF: two forward passes (positive vs negative), layer-local “goodness” objectives, and greedy layer-wise training as the default scheme.</li>
+</ul>
+<h3 id="2-fixing-the-layers-dont-collaborate-problem-directly-relevant-to-your-concern">2) Fixing the “layers don’t collaborate” problem (directly relevant to your concern)</h3>
+<ul>
+<li><strong>Lorberbom et al. (AAAI 2024): “Layer Collaboration in the Forward-Forward Algorithm”</strong><br>
+Explicitly targets the main failure mode of vanilla FF in deep nets: independently trained layers don’t coordinate well, which matters even more in Transformers.</li>
+</ul>
+<h3 id="3-better-negatives-more-stable-training-important-for-anything-beyond-toy-tasks">3) Better negatives / more stable training (important for anything beyond toy tasks)</h3>
+<ul>
+<li>
+<p><strong>Ororbia &amp; Mali (2023): “The Predictive Forward-Forward Algorithm”</strong><br>
+Combines FF ideas with predictive-coding style circuitry (representation + generative circuit). If you’re thinking about sequence prediction or “world-model-ish” training, this is one of the most conceptually relevant extensions.</p>
+</li>
+<li>
+<p><strong>Chen et al. (Nature Communications 2025): “Self-Contrastive Forward-Forward (SCFF)”</strong><br>
+A modernized FF-style method emphasizing self-contrast and improved negative handling; one of the more prominent “FF, but competitive” directions.</p>
+</li>
+</ul>
+<h3 id="4-scalingdepth-and-goodness-design">4) Scaling/depth and “goodness” design</h3>
+<ul>
+<li>
+<p><strong>Sun et al. (ICLR 2025): “DEEPERFORWARD”</strong><br>
+Focuses on making FF work better as depth increases (goodness design + normalization choices + efficiency strategy). Useful if you’re thinking “Transformer-depth-like” even if experiments are mostly CNN-ish.</p>
+</li>
+<li>
+<p><strong>Wu et al. (2024): “Distance-Forward Learning”</strong><br>
+Reformulates/improves FF using a distance/metric-learning lens; relevant because Transformers often benefit from representation shaping objectives that look more like metric learning than “sum of squares.”</p>
+</li>
+<li>
+<p><strong>Shah et al. (2025): “Large Scale Benchmarking of Goodness Functions for the Forward-Forward Algorithm”</strong><br>
+If you’re trying to prevent “tangled representations,” you’ll likely end up changing the goodness function—this paper is directly about that design space.</p>
+</li>
+<li>
+<p><strong>Gong et al. (2025): “FAUST: Reshaping the Forward-Forward Algorithm with a Similarity-Based Objective”</strong><br>
+Connects FF to similarity-learning losses; helpful if your plan is to enforce more global/consistent representational geometry.</p>
+</li>
+</ul>
+<hr>
+<h2 id="has-anyone-tried-transformers-with-ff-and-what-kind">“Has anyone tried Transformers with FF?” (and what kind)</h2>
+<h3 id="vision-transformers-closest-clean-transformer-architecture-ff-work">Vision Transformers (closest “clean” Transformer-architecture FF work)</h3>
+<ul>
+<li><strong>Aghagolzadeh &amp; Ezoji (2025): “Contrastive Forward-Forward: A Training Algorithm of Vision Transformer”</strong><br>
+One of the more direct “FF-style training applied to a Transformer family architecture” papers (ViT).</li>
+</ul>
+<h3 id="transformers-for-nlp-classification-not-autoregressive-generation-but-nlp-transformers-ff">Transformers for NLP classification (not autoregressive generation, but NLP + Transformers + FF)</h3>
+<ul>
+<li><strong>Kim &amp; Yoo (2025): “Replacing Backpropagation with the Forward-Forward (FF) Algorithm in Transformer Models…”</strong><br>
+Proposes FF-based training in a Transformer setting and reports experiments on <strong>IMDB sentiment</strong> (classification). This is relevant if you want to see how someone mapped FF onto attention blocks in practice—but it is not an end-to-end autoregressive LM paper.</li>
+</ul>
+<hr>
+<h2 id="autoregressive-causal-language-models-with-ff-what-exists-as-of-2026-03-02">Autoregressive / causal language models with FF: what exists as of 2026-03-02</h2>
+<h3 id="what-i-found-published-citable">What I found (published / citable)</h3>
+<p>I did <strong>not</strong> find a widely cited, mainstream paper showing <strong>end-to-end pretraining of a decoder-only autoregressive language model</strong> (GPT-like next-token LM) using <strong>pure Hinton-style FF</strong> at meaningful scale.</p>
+<p>What <em>is</em> out there falls into three buckets:</p>
+<ol>
+<li>
+<p><strong>Transformer + FF, but on classification tasks</strong> (e.g., IMDB sentiment).</p>
+</li>
+<li>
+<p><strong>Patent literature</strong> explicitly discussing forward-forward training applied to tasks including <em>masked</em> or <em>causal language modeling</em>-type setups (useful for ideas about how to construct positives/negatives for language), but it’s not a peer-reviewed scaling result.</p>
+</li>
+<li>
+<p><strong>Community / repo-level attempts</strong> at “mini-GPT with forward-forward,” but not established as a solid research baseline. The Hugging Face thread explicitly notes the lack of generative LM examples and points to experimental repos.</p>
+</li>
+</ol>
+<h3 id="closest-similar-forward-only-methods-actually-used-on-language-models-not-ff-but-highly-relevant">Closest “similar, forward-only” methods actually used on language models (not FF, but highly relevant)</h3>
+<p>If your real requirement is “no backprop / no backward pass” (or “avoid global credit assignment”), these are the most relevant LM-adjacent works:</p>
+<ul>
+<li>
+<p><strong>Malladi et al. (NeurIPS 2023): “Fine-Tuning Language Models with Just Forward Passes” (MeZO)</strong><br>
+This is a <em>big deal</em> practically: forward-pass-only optimization for fine-tuning, evaluated on both masked and autoregressive LMs. It’s not FF; it’s zeroth-order optimization. But it’s the most concrete “LMs without backprop” result line I found.</p>
+</li>
+<li>
+<p><strong>Pau &amp; Aymone (2024): “Forward Learning of Large Language Models…” (PEPITA / MEMPEPITA on Transformer LLMs)</strong><br>
+Again, not FF, but explicitly about forward-learning rules on Transformer-based LLMs (and discusses CLM/MLM token-level error setups).</p>
+</li>
+</ul>
+<hr>
+<h2 id="do-you-train-each-layer-separately-in-order-or-what-short-concrete-answer">“Do you train each layer separately in order or what?” (short, concrete answer)</h2>
+<ul>
+<li>
+<p><strong>Vanilla Hinton-FF</strong> is <strong>greedy layer-wise</strong>: train layer 1 with its local objective (pos/neg), then freeze it and train layer 2, etc.</p>
+</li>
+<li>
+<p>The main reason people moved beyond vanilla FF is exactly what you’re pointing at: <strong>greedy, isolated layer training tends to harm cross-layer coordination</strong>. The <strong>Layer Collaboration</strong> paper is explicitly about addressing that.</p>
+</li>
+<li>
+<p>Many “FF-like” successors can be interpreted as: keep locality, but introduce <strong>inter-layer signals</strong> (collaboration) and/or <strong>better contrastive setups</strong> (better negatives) so deeper stacks don’t become dysfunctional.</p>
+</li>
+</ul>
+<hr>
+<h2 id="if-your-target-is-specifically-autoregressive-lm-with-ff-what-to-look-for-in-papers-based-on-what-exists">If your target is specifically “autoregressive LM with FF”: what to look for in papers (based on what exists)</h2>
+<p>Given the current literature, the practical path is usually:</p>
+<ul>
+<li>
+<p>Start from <strong>FF improvements that fix negatives + collaboration</strong> (Layer Collaboration, SCFF, goodness-function benchmarking).</p>
+</li>
+<li>
+<p>Use the <strong>Transformer implementations that exist (even if classification)</strong> to see where people place local losses inside attention/FFN blocks and how they handle normalization/residuals.</p>
+</li>
+<li>
+<p>Treat <strong>MeZO / PEPITA</strong> as “reference points” for what <em>actually works today</em> on language models without standard backprop, even if they are not FF.</p>
+</li>
+<li>
+<p>Mine the <strong>patent</strong> for explicit suggestions on applying forward-forward training to masked/causal language modeling setups (positive/negative construction ideas).</p>
+</li>
+</ul>
+<p>If you want, I can convert the above into a tighter “reading order” (5–7 items) depending on whether your immediate goal is (a) a working prototype on a small GPT-like model, or (b) inventing a better FF objective that preserves global structure in deep attention stacks.</p>
+<h2 id="user-3">User</h2>
+<p>review all this lit to figure out how we can train an autoregressive generative language model using FF or somethign very similar, and figure out why no one has (and check experimental nano gpt projects to learn more)</p>
+<h2 id="assistant-3">Assistant</h2>
+<h2 id="what-train-each-layer-separately-means-in-forward-forward">What “train each layer separately” means in Forward-Forward</h2>
+<p>In Hinton’s Forward-Forward (FF), <em>each layer/block has its own local objective</em> (“goodness” high on positives, low on negatives), and you typically <strong>update layers using only their local loss</strong> while <strong>stopping gradients between layers</strong> (detach the input to the layer you’re updating).</p>
+<p>So in practice you do something like:</p>
+<ul>
+<li>
+<p>Run a <strong>positive</strong> forward pass (real example) and a <strong>negative</strong> forward pass (corrupted example).</p>
+</li>
+<li>
+<p>For <strong>layer i</strong>, compute a local loss from its activations on those two passes and update <strong>only layer i</strong> (no cross-layer backprop).</p>
+</li>
+<li>
+<p>Move to layer i+1, etc.</p>
+</li>
+</ul>
+<p>The big caveat is that “vanilla” FF can have poor deep-layer usefulness: the <strong>first layer alone can outperform deeper stacks</strong>, indicating weak inter-layer collaboration.<br>
+That’s why the more relevant question for transformers is not only “separately or together?”, but <strong>how to preserve collaboration / global behavior without end-to-end backprop</strong>.</p>
+<h2 id="the-most-relevant-papers-to-review-prioritized">The most relevant papers to review (prioritized)</h2>
+<h3 id="core-ff-the-sequencelm-clue-and-warning">Core FF + the sequence/LM clue (and warning)</h3>
+<ul>
+<li><strong>Hinton (2022): “The Forward-Forward Algorithm: Some Preliminary Investigations.”</strong><br>
+Defines FF, why normalization is needed to prevent trivial solutions, and explicitly flags sequential learning as a target.<br>
+Critically: Hinton reports an early draft result on <strong>next-character prediction</strong> (predict next character from a window) that he later <strong>could not replicate</strong> and suspected was due to a bug.<br>
+This is one of the strongest “why isn’t there an FF GPT already?” signals.</li>
+</ul>
+<h3 id="fixing-the-deep-networks-dont-collaborate-failure-mode">Fixing the “deep networks don’t collaborate” failure mode</h3>
+<ul>
+<li><strong>Lorberbom et al. (2023/2024): “Layer Collaboration in the Forward-Forward Algorithm.”</strong><br>
+Shows FF layers don’t effectively communicate; deeper layers can hurt; proposes <strong>Collaborative Forward-Forward</strong> by using a <strong>global goodness term</strong> (sum of other layers’ goodness) while <em>not</em> backpropagating through those other layers (they use a frozen copy / stop-grad idea).<br>
+For transformers, this is directly relevant to “maintain global characteristics.”</li>
+</ul>
+<h3 id="making-ff-train-deeperstabler-goodness-normalization-residuals">Making FF train deeper/stabler (goodness + normalization + residuals)</h3>
+<ul>
+<li><strong>Sun et al. (ICLR 2025): “DeeperForward.”</strong><br>
+Diagnoses squared-norm goodness + normalization issues in deep FF and proposes <strong>mean goodness + layer norm</strong>, plus residual-structure adaptations to help deep learning in FF settings.<br>
+Even though it’s CNN-focused, the <em>design lessons</em> (goodness definition, normalization, residual structure role) map to transformers.</li>
+</ul>
+<h3 id="moving-beyond-hand-crafted-negatives">Moving beyond “hand-crafted negatives”</h3>
+<ul>
+<li><strong>Chen et al. (Nature Communications 2025): “Self-Contrastive Forward-Forward.”</strong><br>
+A major direction: reduce dependence on external negative sampling and extend FF-style training to broader regimes including time-series/unsupervised settings.</li>
+</ul>
+<h3 id="ff-but-with-an-explicit-generative-circuit">“FF but with an explicit generative circuit”</h3>
+<ul>
+<li><strong>Ororbia &amp; Mali (2023): “The Predictive Forward-Forward Algorithm.”</strong><br>
+Proposes a recurrent system that jointly learns a <strong>representation circuit + directed generative circuit</strong>, and reports classification/reconstruction/synthesis without backprop.<br>
+This is highly relevant if your plan is “use a generator to produce negatives” (or to avoid manual corruptions).</li>
+</ul>
+<h3 id="first-steps-in-nlp-not-language-modeling-yet">First steps in NLP (not language modeling yet)</h3>
+<ul>
+<li><strong>Gandhi et al. (2023): “Extending the Forward Forward Algorithm.”</strong><br>
+Replicates MNIST and extends FF to <strong>IMDb sentiment</strong> (classification), explicitly positioning it as an early step beyond vision.</li>
+</ul>
+<h2 id="has-anyone-trained-an-autoregressive-gpt-like-lm-with-ff">Has anyone trained an autoregressive GPT-like LM with FF?</h2>
+<p>I did not find a peer-reviewed result demonstrating a competitive <strong>causal/autoregressive transformer language model</strong> trained end-to-end with Hinton-style FF as the primary learning rule.</p>
+<p>What exists is:</p>
+<ul>
+<li>
+<p><strong>Hinton’s own attempted next-character prediction</strong> in an early draft that he later could not reproduce.</p>
+</li>
+<li>
+<p>Community discussion where people explicitly say they’re attempting “mini-GPT” with FF, and the referenced repos were “not working” / hard to find; one “forward_forward_gpt” repo is referenced but is no longer accessible at the linked location.</p>
+</li>
+<li>
+<p>NLP extensions that are <strong>classification</strong> (IMDb) rather than <strong>autoregressive generation</strong>.</p>
+</li>
+</ul>
+<h2 id="why-ff-gpt-hasnt-happened-the-concrete-blockers">Why “FF GPT” hasn’t happened (the concrete blockers)</h2>
+<h3 id="1-the-label-space-is-enormous-vocab-and-ff-style-inferencetraining-can-be-label-iterative">1) The label space is enormous (vocab), and FF-style inference/training can be <em>label-iterative</em></h3>
+<p>Classical FF classification often evaluates “goodness” for each possible label and picks the max, which scales poorly when the label set is large.<br>
+For language modeling, the “label” is the next token (often 50k–200k). Doing multiple forward passes per candidate token is a non-starter without a redesign.</p>
+<h3 id="2-deep-layer-usefulnesscollaboration-is-already-fragile-in-ff">2) Deep-layer usefulness/collaboration is already fragile in FF</h3>
+<p>Layer Collaboration shows vanilla FF can have the pathological behavior where early layers dominate and deeper layers don’t help, because layers are “not aware” of later layers.<br>
+Transformers depend on depth; if deeper blocks don’t reliably add value, you won’t get GPT-like scaling.</p>
+<h3 id="3-negatives-are-easy-to-define-for-tokens-but-hard-to-make-informative-at-scale">3) Negatives are easy to define for tokens, but hard to make <em>informative</em> at scale</h3>
+<p>Random wrong-token negatives can be too easy; “hard negatives” require either:</p>
+<ul>
+<li>
+<p>a strong proposal model (which is usually trained with backprop), or</p>
+</li>
+<li>
+<p>additional machinery (self-contrastive schemes, learned generators, etc.).</p>
+</li>
+</ul>
+<h3 id="4-sequential-learning-instability-shows-up-early">4) Sequential learning instability shows up early</h3>
+<p>Hinton’s inability to replicate the character-prediction result suggests that even toy LM setups can be unstable depending on goodness, learning rates, scheduling of positive/negative phases, etc.</p>
+<h3 id="5-engineering-reality-the-best-nanogpt-style-codebases-are-backprop-first">5) Engineering reality: the best “nanoGPT-style” codebases are backprop-first</h3>
+<p>Useful for experimentation, but they won’t give you an FF LM “for free.” Examples like Transformer-Sandbox and cleanGPT are explicitly forks/research frameworks around nanoGPT-style training and architecture exploration, not FF training.</p>
+<h2 id="a-practical-design-to-train-an-autoregressive-generative-lm-with-ff-like-learning">A practical design to train an autoregressive generative LM with FF-like learning</h2>
+<p>If the goal is <strong>autoregressive generation</strong>, you must avoid “one forward pass per vocab item.”</p>
+<p>The key move is to treat FF “positive vs negative” as <strong>contrastive learning of (context, next-token)</strong> with <em>sampled negatives</em>, so your compute per token is O(K) negatives, not O(|V|).</p>
+<h3 id="core-formulation-conditional-energy-goodness-for-next-token">Core formulation: conditional energy / goodness for next token</h3>
+<p>For each position <em>t</em> in a sequence:</p>
+<ul>
+<li>
+<p>Context representation at layer i: hi,t=Blocki(detach(hi−1))h_{i,t} = \mathrm{Block}_i(\text{detach}(h_{i-1}))hi,t​=Blocki​(detach(hi−1​))</p>
+</li>
+<li>
+<p>Token embedding table: E[w]E[w]E[w]</p>
+</li>
+</ul>
+<p>Define a <strong>goodness</strong> for the correct next token w+=xt+1w^+=x_{t+1}w+=xt+1​ and sampled negatives wk−∼q(⋅)w^-_k\sim q(\cdot)wk−​∼q(⋅):</p>
+<ul>
+<li>
+<p>Simple and scalable goodness:</p>
+<p>gi(hi,t,w)=⟨LN(hi,t),LN(E[w])⟩g_i(h_{i,t}, w) = \langle \mathrm{LN}(h_{i,t}), \mathrm{LN}(E[w])\ranglegi​(hi,t​,w)=⟨LN(hi,t​),LN(E[w])⟩</p>
+<p>(dot-product similarity; you can also use cosine)</p>
+</li>
+</ul>
+<p>Train each layer i with a local NCE/logistic loss:</p>
+<ul>
+<li>
+<p>Increase gi(⋅,w+)g_i(\cdot, w^+)gi​(⋅,w+)</p>
+</li>
+<li>
+<p>Decrease gi(⋅,wk−)g_i(\cdot, w^-_k)gi​(⋅,wk−​)</p>
+</li>
+</ul>
+<p>This is “FF-like” because it’s <strong>purely forward signals + local discrimination between positives/negatives</strong>, matching FF’s stated link to contrastive learning/NCE ideas.</p>
+<h3 id="how-to-keep-it-ff-no-cross-layer-backprop">How to keep it FF (no cross-layer backprop)</h3>
+<p>For each transformer block i, you:</p>
+<ol>
+<li>
+<p>Compute its output using <strong>detached</strong> input states (stop-grad boundary).</p>
+</li>
+<li>
+<p>Compute its local contrastive loss using its output only.</p>
+</li>
+<li>
+<p>Backprop <strong>only within the block</strong> to update its parameters.</p>
+</li>
+</ol>
+<p>This matches the “train each layer locally” spirit.</p>
+<h3 id="how-to-preserve-global-characteristics-avoid-layer-collapse">How to preserve <em>global characteristics</em> (avoid “layer collapse”)</h3>
+<p>Use <strong>Collaborative Forward-Forward</strong> ideas:</p>
+<ul>
+<li>
+<p>When updating layer i, include a <strong>global goodness offset</strong> computed from other layers’ goodness but treated as constant (stop-grad / frozen copy).</p>
+</li>
+<li>
+<p>Operationally, you maintain a “shadow” copy f^\hat ff^​ of other layers used only to compute the offset γ\gammaγ, without taking gradients through it.</p>
+</li>
+</ul>
+<p>This is a direct mechanism to make early layers “care” about downstream behavior without end-to-end backprop.</p>
+<h3 id="goodness-choice-and-normalization-important-in-deep-nets">Goodness choice and normalization (important in deep nets)</h3>
+<p>Vanilla FF’s squared-norm goodness can create scaling/dead-unit issues; DeeperForward specifically argues for:</p>
+<ul>
+<li>
+<p><strong>layer normalization</strong> for feature scaling</p>
+</li>
+<li>
+<p><strong>mean goodness</strong> to decouple representation from the goodness scalar and avoid dead-neuron update problems</p>
+</li>
+</ul>
+<p>For transformers (already LN-heavy), the takeaway is:</p>
+<ul>
+<li>
+<p>Your goodness should not be trivially encoded in magnitude that later layers can exploit.</p>
+</li>
+<li>
+<p>If you rely on magnitude-based goodness, ensure LN placement truly removes it (and doesn’t leak it through residual pathways).</p>
+</li>
+</ul>
+<p>DeeperForward also highlights that residual structures help integrate features across levels in FF-style deep training.<br>
+For transformers, that suggests being very deliberate about where goodness is measured (pre/post residual, pre/post LN).</p>
+<h3 id="negative-sampling-strategies-that-actually-work-for-lms">Negative sampling strategies that actually work for LMs</h3>
+<p>You need negatives that are <em>not</em> trivially separable.</p>
+<p>A workable progression:</p>
+<ol>
+<li>
+<p><strong>Unigram noise</strong> negatives (word2vec-style) for a first working baseline.</p>
+</li>
+<li>
+<p>Move to <strong>in-batch negatives</strong> (other targets in the batch).</p>
+</li>
+<li>
+<p>Add <strong>proposal-based hard negatives</strong>: sample from a cheap auxiliary head (could be shallow, even trained with standard methods) and use top-k as negatives.<br>
+This keeps training O(K) while making negatives informative.</p>
+</li>
+</ol>
+<h3 id="inference-how-do-you-actually-generate-text">Inference: how do you actually generate text?</h3>
+<p>Once you train a final-layer representation hL,th_{L,t}hL,t​, you can produce logits by:</p>
+<p>ℓ[w]=⟨hL,t,E[w]⟩\ell[w] = \langle h_{L,t}, E[w]\rangleℓ[w]=⟨hL,t​,E[w]⟩</p>
+<p>and sample via softmax like a standard LM.</p>
+<p>If you also want FF’s “global goodness” to matter at inference:</p>
+<ul>
+<li>
+<p>Use <strong>two-stage decoding</strong>:</p>
+<ol>
+<li>
+<p>propose top-k tokens by dot-product logits</p>
+</li>
+<li>
+<p>re-rank with a more expensive “global goodness” score that includes multiple layers<br>
+This avoids O(|V|) FF scoring.</p>
+</li>
+</ol>
+</li>
+</ul>
+<h2 id="recommended-experimental-path-nanogpt-scale-but-ff-style">Recommended experimental path (nanoGPT-scale, but FF-style)</h2>
+<h3 id="phase-0-prove-the-mechanics-on-tiny-char-level-lm">Phase 0: prove the mechanics on tiny char-level LM</h3>
+<ul>
+<li>
+<p>Dataset: Tiny Shakespeare (char-level)</p>
+</li>
+<li>
+<p>Model: 2–4 transformer blocks, very small d_model</p>
+</li>
+<li>
+<p>Objective: local contrastive next-char (K negatives)</p>
+</li>
+<li>
+<p>Metric: bits-per-character</p>
+</li>
+</ul>
+<p>This aligns with Hinton’s own reported-but-not-reproduced direction (next-character prediction).</p>
+<h3 id="phase-1-fix-deep-layer-collapse-early">Phase 1: fix deep-layer collapse early</h3>
+<p>Add layer-collaboration offset γ\gammaγ (frozen-copy style) and compare:</p>
+<ul>
+<li>vanilla per-layer loss vs collaborative loss</li>
+</ul>
+<h3 id="phase-2-stabilize-deep-training">Phase 2: stabilize deep training</h3>
+<p>Adopt the “goodness design + normalization” lessons from DeeperForward:</p>
+<ul>
+<li>
+<p>treat goodness in a way that doesn’t break scaling across layers</p>
+</li>
+<li>
+<p>ensure LN placement prevents trivial “magnitude channel” solutions</p>
+</li>
+</ul>
+<h3 id="phase-3-move-to-subword-vocab-and-real-lm">Phase 3: move to subword vocab and real LM</h3>
+<ul>
+<li>
+<p>Switch tokenizer, larger vocab</p>
+</li>
+<li>
+<p>Use proposal-based negatives to keep compute manageable</p>
+</li>
+<li>
+<p>Evaluate perplexity and sample quality</p>
+</li>
+</ul>
+<h2 id="what-i-would-conclude-from-the-literature-in-one-sentence">What I would conclude from the literature, in one sentence</h2>
+<p>The literature strongly suggests you <strong>should not</strong> train a transformer LM with naive, strictly greedy FF; you likely need (i) <strong>collaboration/global-goodness tricks</strong> to prevent deep-layer uselessness, (ii) <strong>a scalable goodness definition/normalization scheme</strong> to keep deep learning stable, and (iii) an <strong>NCE-style sampled-negative formulation</strong> so “label iteration over vocab” is avoided.</p>
+<p>If you want, I can convert the above into a concrete block-by-block training pseudocode for a GPT-style transformer (including where to detach, what tensors the local loss uses, and how to structure the optimizer steps per block).</p>
+<h2 id="user-4">User</h2>
+<p>should we be tweaking FF to measure goodness at a distribution of logits level? instead of a classifier. or is that the same as an already existing different approach</p>
+<h2 id="assistant-4">Assistant</h2>
+<p>In an autoregressive LM, “a classifier” and “a distribution over logits” are basically the same object: at each position you are doing <strong>multiclass classification over the vocabulary</strong>. The real question is which <em>training objective</em> you attach to those logits and whether you keep the <strong>FF constraint</strong> (purely local learning, no end-to-end gradient flow).</p>
+<p>There are two distinct interpretations of what you’re proposing.</p>
+<h2 id="1-full-distribution-level-goodness-cross-entropy-kl-on-logits">1) Full distribution-level goodness (cross-entropy / KL on logits)</h2>
+<p>If by “goodness at a distribution level” you mean something like:</p>
+<ul>
+<li>
+<p><strong>Goodness</strong> g=−CE(softmax(ℓ),y)g = -\mathrm{CE}(\text{softmax}(\ell), y)g=−CE(softmax(ℓ),y), or</p>
+</li>
+<li>
+<p><strong>Goodness</strong> g=−KL(ptarget ∥ softmax(ℓ))g = -\mathrm{KL}(p_\text{target}\,\|\,\text{softmax}(\ell))g=−KL(ptarget​∥softmax(ℓ))</p>
+</li>
+</ul>
+<p>then you’re just using a <strong>proper scoring rule</strong> on the predicted distribution.</p>
+<p>That is not uniquely “Forward–Forward”; it’s essentially:</p>
+<ul>
+<li>
+<p><strong>Deep supervision / auxiliary heads</strong> (losses applied at intermediate layers), e.g. Deeply-Supervised Nets.</p>
+</li>
+<li>
+<p>Or, if you <em>stop gradients between blocks and train each block with its own local head</em>, it falls under <strong>local-learning / local error signals</strong> and related decoupled training families (local classifiers per layer, no global backprop to earlier layers).</p>
+</li>
+<li>
+<p>Closely adjacent to “decoupled greedy learning” style decompositions (again: module-local objectives rather than one global one).</p>
+</li>
+</ul>
+<p>So: <strong>yes</strong>, “distribution-level goodness” largely collapses into an already-existing approach family (deep supervision / local losses). The novelty would be your <em>specific way of enforcing locality, collaboration, and negative construction</em>, not the fact you’re scoring distributions.</p>
+<p>Practical blocker: full softmax CE requires summing over ∣V∣|V|∣V∣, which is expensive for big vocabs. Classic LM work uses sampling/importance approximations to avoid full normalization.</p>
+<h2 id="2-ff-style-goodness-on-token-candidates-nce-negative-sampling-sampled-softmax">2) FF-style goodness on <em>token candidates</em> (NCE / negative sampling / sampled softmax)</h2>
+<p>If instead you mean: “Don’t treat it as binary ‘is this input real?’; treat goodness as the <strong>logit/energy score</strong> of (context, candidate next token) and learn by contrasting true vs false tokens,” then you’re squarely in the territory FF already points toward.</p>
+<p>Hinton explicitly frames FF as inspired by <strong>Noise-Contrastive Estimation (NCE)</strong>.<br>
+NCE itself is: train by <strong>logistic regression discriminating data from noise</strong>, rather than computing a full normalized likelihood.</p>
+<p>For an LM at position ttt:</p>
+<ul>
+<li>
+<p>context representation: hth_tht​ (from some layer/block)</p>
+</li>
+<li>
+<p>token embedding: E[w]E[w]E[w]</p>
+</li>
+<li>
+<p>score/logit (“goodness” per token): s(w)=⟨ht,E[w]⟩s(w)=\langle h_t, E[w]\rangles(w)=⟨ht​,E[w]⟩</p>
+</li>
+</ul>
+<p>Then train with:</p>
+<ul>
+<li>
+<p>positive token w+=xt+1w^+=x_{t+1}w+=xt+1​</p>
+</li>
+<li>
+<p>negatives w1−,…,wK−∼q(⋅)w^-_1,\dots,w^-_K \sim q(\cdot)w1−​,…,wK−​∼q(⋅)</p>
+</li>
+</ul>
+<p>A standard NCE/negative-sampling objective is:</p>
+<p>L=−log⁡σ(s(w+))−∑k=1Klog⁡σ(−s(wk−))\mathcal{L} = -\log \sigma(s(w^+)) - \sum_{k=1}^K \log \sigma(-s(w^-_k))L=−logσ(s(w+))−k=1∑K​logσ(−s(wk−​))</p>
+<p>This is the same basic shape as widely used negative-sampling objectives in NLP.</p>
+<p>This variant is much more “FF-like” because:</p>
+<ul>
+<li>
+<p>it’s still <strong>positive vs negative</strong></p>
+</li>
+<li>
+<p>you can implement it with <strong>two forward evaluations per sample</strong> (or one forward for the context + multiple candidate dot-products)</p>
+</li>
+<li>
+<p>you avoid the ∣V∣|V|∣V∣ softmax</p>
+</li>
+</ul>
+<p>If you want the <em>distribution</em> eventually for generation, you can still decode with a softmax over logits at inference; the training objective just avoids full normalization.</p>
+<h2 id="which-one-should-you-do-for-an-autoregressive-ff-like-lm">Which one should you do for an autoregressive FF-like LM?</h2>
+<p>If the goal is “FF or something very similar” <strong>and</strong> “scales to large vocab,” the more natural move is:</p>
+<ul>
+<li>Use <strong>candidate-level goodness</strong> (token energy/logit) + <strong>sampled negatives</strong> (NCE/negative sampling / sampled softmax family).</li>
+</ul>
+<p>If you instead do full-distribution CE/KL at each layer:</p>
+<ul>
+<li>
+<p>you are effectively doing <strong>local losses / deep supervision</strong>, not classic FF.</p>
+</li>
+<li>
+<p>it’s viable, but the “FF-ness” is mostly in your <strong>gradient stopping between blocks</strong> and your <strong>module-local objectives</strong>, not in the loss form itself.</p>
+</li>
+</ul>
+<h2 id="the-important-nuance-for-why-this-isnt-just-a-classifier">The important nuance for “why this isn’t just ‘a classifier’”</h2>
+<p>A next-token softmax head <em>is</em> a classifier. The distinction is:</p>
+<ul>
+<li>
+<p>FF classification (original) often relies on <strong>evaluating goodness per label</strong> by “clamping” the label and comparing goodness across labels. That is infeasible for vocab-size labels.</p>
+</li>
+<li>
+<p>Switching to logits/energies with <strong>sampling</strong> is how language modeling has historically avoided the “evaluate every label” trap.</p>
+</li>
+</ul>
+<h2 id="bottom-line">Bottom line</h2>
+<ul>
+<li>
+<p><strong>Distribution-level goodness</strong> = you’re mostly rediscovering <strong>cross-entropy / KL</strong> plus <strong>deep supervision / local losses</strong>.</p>
+</li>
+<li>
+<p><strong>Candidate-logit goodness with negatives</strong> = you’re mostly rediscovering <strong>NCE / negative sampling / sampled-softmax-style</strong> training, which is already tightly aligned with FF’s “positive vs negative” roots.</p>
+</li>
+</ul>
+<p>What could be genuinely new is not “goodness on logits,” but:</p>
+<ul>
+<li>
+<p>enforcing <strong>strict block-local updates</strong> in a transformer (stop-grad boundaries),</p>
+</li>
+<li>
+<p>adding <strong>inter-layer collaboration signals</strong> without end-to-end backprop,</p>
+</li>
+<li>
+<p>and designing <strong>hard negatives/proposals</strong> that make the model learn global sequence constraints rather than local token heuristics.</p>
+</li>
+</ul>
+<p>If you want, I can give a concrete “FF-like GPT training objective” that is (a) token-energy NCE, (b) block-local, (c) compatible with tied embeddings, and (d) uses a proposal mechanism for hard negatives so it doesn’t collapse into unigram discrimination.</p>
+<h2 id="user-5">User</h2>
+<p>so for hard negatives, Hinton tried using the model's own predictions and that didn't work? or we're not sure</p>
+<h2 id="assistant-5">Assistant</h2>
+<p>Hinton did propose (and in one draft explicitly <em>demonstrated</em>) using the model’s own predictions to generate negatives for a toy next-character task — but in the later “final” PDF he says he could not reproduce the key result and suspects it was a bug. So it’s not a clean “it didn’t work”; it’s “he reported it working, then later wasn’t sure / couldn’t replicate.”</p>
+<p>What the paper(s) say, precisely:</p>
+<ul>
+<li>
+<p>In the core FF setup he explicitly allows negatives to be <strong>predicted by the net itself</strong> (via top‑down connections) or supplied externally.</p>
+</li>
+<li>
+<p>In an earlier version of the paper (the one that includes a full “predict the next character” section), he describes constructing negatives by taking a real 10‑character context and replacing the last character with <strong>a prediction from the model</strong> (“teacher forcing” style). He also describes generating <strong>entire negative sequences</strong> from the predictive model starting from an initial real context, and says this worked “very nearly as well” as teacher forcing.</p>
+</li>
+<li>
+<p>In the later “FFXfinal” PDF, he revisits that as a “sleep/offline negatives” motivation and says: he previously reported doing many positive updates followed by many negative updates <strong>generated by the net itself</strong> with little loss, but he has been <strong>unable to replicate</strong> and suspects a <strong>bug</strong>. He adds that, with squared-activity goodness, separating positive/negative phases seems to require very low learning rate and extremely high momentum, and that maybe a different goodness function could make phase separation work (open question).</p>
+</li>
+</ul>
+<p>So the most accurate summary is:</p>
+<ul>
+<li>
+<p><strong>Yes</strong>, he tried (in a toy sequence setting) using model-generated predictions as negatives.</p>
+</li>
+<li>
+<p><strong>He initially reported it worked</strong>, including the idea that negatives could be generated “offline/sleep.”</p>
+</li>
+<li>
+<p><strong>Later he could not replicate the result and suspected a bug</strong>, so we don’t have a reliable, reproduced claim that this works as stated.</p>
+</li>
+</ul>
+<p>Also note: his “couldn’t replicate” comment in the final version is tied to <em>separating positive and negative phases into large blocks of updates</em> (wake/sleep style), not necessarily to the basic idea “use model predictions as hard negatives” in an online interleaved way.</p>
+<h2 id="user-6">User</h2>
+<p>did he share code for that? low learning and high momentum may be ok, or we could play with diff goodness funcs or global sync like we discussed (unless he was already doing that)</p>
+<h2 id="assistant-6">Assistant</h2>
+<h3 id="did-hinton-share-code-for-the-sequence-sleep-phase-hard-negative-experiment">Did Hinton share code for the sequence / “sleep-phase” hard-negative experiment?</h3>
+<p>Not that I can find.</p>
+<p>What he <em>did</em> share publicly is:</p>
+<ul>
+<li><strong><code>ffcode.zip</code> (Matlab)</strong>: “matlab code for the supervised version of FF with the first 10 pixels being the labels,” linked from his homepage, plus a short <strong>README.txt</strong> describing how to run it on MNIST.</li>
+</ul>
+<p>That release is for the <strong>supervised MNIST setup</strong> (labels embedded into the input), not the <strong>next-character prediction / offline negative generation</strong> experiment.</p>
+<p>In the final paper, he explicitly says the next-character “sleep-phase” result he reported in an early draft was <strong>not reproducible</strong> and he suspects it was due to a <strong>bug</strong>.<br>
+Given that, it’s unsurprising there’s no “official” code drop for the sequence case.</p>
+<h3 id="what-exactly-was-the-low-learning-rate-high-momentum-about">What exactly was the “low learning rate / high momentum” about?</h3>
+<p>It’s specifically about <strong>separating positive and negative learning into long blocks</strong>, i.e.:</p>
+<ul>
+<li>
+<p>“thousands of weight updates on positive data”<br>
+followed by</p>
+</li>
+<li>
+<p>“thousands on negative data” (generated by the net)</p>
+</li>
+</ul>
+<p>He says that with <strong>sum-of-squared-activities goodness</strong>, that long-block alternation “only works if the learning rate is very low and the momentum is extremely high,” and that a different goodness function <em>might</em> allow phase separation.</p>
+<p>So two important implications:</p>
+<ol>
+<li>
+<p>That warning is about the <strong>wake/sleep separation regime</strong>, not necessarily about <strong>interleaving pos/neg within each minibatch/step</strong> (which is closer to standard contrastive/NCE practice).</p>
+</li>
+<li>
+<p>It’s also tied to that specific goodness choice (squared activity), and he explicitly flags “different goodness function” as the likely lever.</p>
+</li>
+</ol>
+<h3 id="was-he-already-doing-global-sync-like-we-discussed">Was he “already doing global sync” like we discussed?</h3>
+<p>Depends what you mean by “global sync.”</p>
+<p><strong>He <em>was</em> doing synchronous updates of hidden states in a recurrent/iterative version of FF</strong> (his “treat a static image as a boring video” idea). He reports that synchronous updates of <em>all hidden layers</em> with damping actually learned slightly better than alternating layer updates.</p>
+<p>That is “global synchronization” in the sense of <strong>global, simultaneous state updates during iterative inference</strong>.</p>
+<p>But <strong>he was not doing “global synchronization” of learning via a cross-layer coordination term in the loss</strong> (the kind of “layer collaboration / global goodness injection” we discussed earlier). In the FF paper(s), the main coordination mechanism is architectural/iterative (the recurrent framing), not an explicit multi-layer coupling term in the objective.</p>
+<h3 id="did-he-already-use-model-based-hard-negatives">Did he already use “model-based hard negatives”?</h3>
+<p>Yes, in two different senses (but with caveats):</p>
+<ol>
+<li>
+<p><strong>Sequence draft (FFA13)</strong>: he describes negatives where the last character in a window is replaced by <strong>a prediction from the previous 10 chars</strong> (“teacher forcing”), and also negatives <strong>entirely generated by the predictive model</strong> starting from the initial real context, which he says worked nearly as well <em>in that draft</em>.</p>
+</li>
+<li>
+<p><strong>Final paper (FFXfinal)</strong>: he later says he could not replicate the sleep-phase block-alternation result and suspects a bug; plus it only worked under extreme optimizer settings with squared-activity goodness.</p>
+</li>
+</ol>
+<p>Also, in the recurrent MNIST setup he generates “harder” negatives by sampling <strong>incorrect labels in proportion to the model’s predicted probabilities</strong> (instead of uniform wrong labels), explicitly noting it makes training more efficient.</p>
+<h3 id="practical-takeaways-for-your-direction">Practical takeaways for your direction</h3>
+<ul>
+<li>
+<p><strong>Low LR + very high momentum</strong> is plausibly “OK” <em>if</em> you really want the long wake/sleep separation, but Hinton’s final writeup strongly suggests that regime is currently brittle and goodness-dependent.</p>
+</li>
+<li>
+<p>A more robust path is usually: <strong>don’t separate phases into long blocks</strong>; instead <strong>interleave pos/neg every step</strong> (or every minibatch) so you’re not relying on momentum to average two opposing objectives.</p>
+</li>
+<li>
+<p>Exploring <strong>different goodness functions</strong> is explicitly endorsed by Hinton as the likely way to make separation feasible.</p>
+</li>
+<li>
+<p>If you want “global coherence” without backprop, Hinton’s paper gives one mechanism (iterative/recurrent inference with synchronous updates) , while later work (not Hinton’s) gives another mechanism (explicit layer-collaboration terms).</p>
+</li>
+</ul>
+<p>If you want, I can propose 2–3 concrete “goodness” definitions for an autoregressive LM that (a) avoid vocab-wide scoring per step and (b) are compatible with either interleaved pos/neg or a stabilized wake/sleep separation.</p>
+<h2 id="user-7">User</h2>
+<p>yes</p>
+<h2 id="assistant-7">Assistant</h2>
+<p>Below are three concrete “goodness” definitions for an autoregressive LM that (a) never require scoring the full vocabulary and (b) can be implemented in an FF‑like, block‑local way (detach between blocks). I’ll also include how each interacts with “hard negatives,” and how to add the global synchronization term we discussed without turning it into end‑to‑end backprop.</p>
+<p>I’ll use this notation:</p>
+<ul>
+<li>
+<p>Tokens: x1,…,xTx_1,\dots,x_Tx1​,…,xT​. Target at position ttt: yt=xt+1y_t = x_{t+1}yt​=xt+1​.</p>
+</li>
+<li>
+<p>Transformer blocks l=1..Ll=1..Ll=1..L. Block output hidden state at position ttt: hl,t∈Rdh_{l,t}\in\mathbb{R}^dhl,t​∈Rd.</p>
+</li>
+<li>
+<p>Token embedding matrix E∈R∣V∣×dE\in\mathbb{R}^{|V|\times d}E∈R∣V∣×d (often tied to output).</p>
+</li>
+<li>
+<p>Candidate set at position ttt: Ct={yt}∪{wt,1−,…,wt,K−}C_t = \{y_t\}\cup\{w^-_{t,1},\dots,w^-_{t,K}\}Ct​={yt​}∪{wt,1−​,…,wt,K−​} with small KKK (e.g. 16–256).</p>
+</li>
+<li>
+<p>“Score” (logit/energy) from layer lll: sl,t(w)s_{l,t}(w)sl,t​(w). You compute this only for w∈Ctw\in C_tw∈Ct​ via embedding gathers.</p>
+</li>
+</ul>
+<p>A standard choice that avoids scale hacks:</p>
+<p>sl,t(w)=⟨LN(hl,t), LN(E[w])⟩τs_{l,t}(w) = \frac{\langle \mathrm{LN}(h_{l,t}),\, \mathrm{LN}(E[w])\rangle}{\tau}sl,t​(w)=τ⟨LN(hl,t​),LN(E[w])⟩​</p>
+<p>(or sl,t(w)=E[w]⊤LN(hl,t)s_{l,t}(w)= E[w]^\top \mathrm{LN}(h_{l,t})sl,t​(w)=E[w]⊤LN(hl,t​) if you don’t want LN on embeddings).</p>
+<hr>
+<h2 id="goodness-1-pairwise-margin-energy-wins-no-softmax-very-fflike">Goodness 1: Pairwise margin “energy wins” (no softmax, very FF‑like)</h2>
+<p><strong>Goodness idea:</strong> the correct token should score higher than negatives by a margin. This is the most direct FF analogue: “positive &gt; negative” locally.</p>
+<p>For each negative w−∈Ct∖{yt}w^- \in C_t\setminus\{y_t\}w−∈Ct​∖{yt​}, define pairwise margin:</p>
+<p>Δl,t(w−)=sl,t(yt)−sl,t(w−)\Delta_{l,t}(w^-) = s_{l,t}(y_t) - s_{l,t}(w^-)Δl,t​(w−)=sl,t​(yt​)−sl,t​(w−)</p>
+<p>Layer‑local loss (smooth hinge / logistic margin):</p>
+<p>Ll,t(1)=∑w−softplus(m−Δl,t(w−))\mathcal{L}^{(1)}_{l,t} = \sum_{w^-} \mathrm{softplus}(m - \Delta_{l,t}(w^-))Ll,t(1)​=w−∑​softplus(m−Δl,t​(w−))</p>
+<ul>
+<li>mmm is a margin (often depth‑scheduled: smaller for early blocks, larger for later blocks).</li>
+</ul>
+<p><strong>Why it’s attractive</strong></p>
+<ul>
+<li>
+<p>No normalization, no full distribution.</p>
+</li>
+<li>
+<p>Directly matches “goodness should separate positives and negatives.”</p>
+</li>
+<li>
+<p>Stable with small candidate sets.</p>
+</li>
+</ul>
+<p><strong>Hard negatives</strong></p>
+<ul>
+<li>
+<p>This objective benefits strongly from <em>hard</em> negatives because easy negatives saturate.</p>
+</li>
+<li>
+<p>Good default: for each position ttt, pick negatives as a mixture:</p>
+<ul>
+<li>
+<p>top‑k1k_1k1​ tokens from a proposal distribution (see below)</p>
+</li>
+<li>
+<ul>
+<li>k2k_2k2​ in‑batch other targets (other yt′y_{t'}yt′​ in the batch)</li>
+</ul>
+</li>
+<li>
+<ul>
+<li>k3k_3k3​ random/unigram tokens for diversity<br>
+(so you don’t overfit to one proposal mechanism)</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p><strong>Wake/sleep compatibility</strong></p>
+<ul>
+<li>
+<p>Works fine interleaved (pos/neg in same step).</p>
+</li>
+<li>
+<p>Also compatible with “sleep”: negatives can be model‑generated continuations; you then compare correct token(s) vs tokens that the sleep generator proposes (or appears in a negative continuation).</p>
+</li>
+</ul>
+<hr>
+<h2 id="goodness-2-candidateset-softmax-crossentropy-distributionlevel-but-cheap">Goodness 2: Candidate‑set softmax cross‑entropy (distribution‑level, but cheap)</h2>
+<p>This is the cleanest way to do “distribution‑level goodness” without ∣V∣|V|∣V∣.</p>
+<p>Define a restricted softmax over the candidate set CtC_tCt​:</p>
+<p>pl,t(w∣Ct)=exp⁡(sl,t(w))∑u∈Ctexp⁡(sl,t(u))p_{l,t}(w\mid C_t) = \frac{\exp(s_{l,t}(w))}{\sum_{u\in C_t}\exp(s_{l,t}(u))}pl,t​(w∣Ct​)=∑u∈Ct​​exp(sl,t​(u))exp(sl,t​(w))​</p>
+<p>Local loss:</p>
+<p>Ll,t(2)=−log⁡pl,t(yt∣Ct)\mathcal{L}^{(2)}_{l,t} = -\log p_{l,t}(y_t\mid C_t)Ll,t(2)​=−logpl,t​(yt​∣Ct​)</p>
+<p>You can define “goodness” as gl,t=−Ll,t(2)g_{l,t}=-\mathcal{L}^{(2)}_{l,t}gl,t​=−Ll,t(2)​ if you want to keep FF language.</p>
+<p><strong>What this is (and isn’t)</strong></p>
+<ul>
+<li>
+<p>It is “classifier-like,” but only over K+1K+1K+1 candidates, not the full vocab.</p>
+</li>
+<li>
+<p>It’s effectively sampled-softmax / contrastive CE. The novelty is not CE itself; it’s using it as a <strong>strictly local objective per block</strong> with detach boundaries, plus your negative strategy and layer collaboration.</p>
+</li>
+</ul>
+<p><strong>Hard negatives</strong></p>
+<ul>
+<li>
+<p>Same mixture strategy as above.</p>
+</li>
+<li>
+<p>This objective is somewhat more forgiving than pairwise margin if some negatives are easy (because normalization still shapes gradients).</p>
+</li>
+</ul>
+<p><strong>Wake/sleep compatibility</strong></p>
+<ul>
+<li>
+<p>Interleaved training works well.</p>
+</li>
+<li>
+<p>For “sleep,” you can populate CtC_tCt​ using top‑kkk from the sleep generator at that position (plus extras).</p>
+</li>
+</ul>
+<p><strong>Optional correction</strong></p>
+<ul>
+<li>If you care about unbiased likelihood estimation, you can add importance corrections based on the negative sampling distribution q(w)q(w)q(w). Practically, many systems just treat it as a contrastive objective and rely on good negatives.</li>
+</ul>
+<hr>
+<h2 id="goodness-3-sequencecontinuation-goodness-global-coherence-beyond-one-token">Goodness 3: Sequence/continuation goodness (global coherence beyond one token)</h2>
+<p>Token‑level training can still yield locally good but globally incoherent behavior. A direct way to encode “global characteristics” is to define goodness over a <em>short continuation</em> window.</p>
+<p>Pick a short horizon HHH (e.g. 8–64 tokens). For each start position ttt, define the continuation:</p>
+<ul>
+<li>
+<p>Positive continuation: Yt+=(xt+1,…,xt+H)Y^+_{t} = (x_{t+1},\dots,x_{t+H})Yt+​=(xt+1​,…,xt+H​)</p>
+</li>
+<li>
+<p>Negative continuation: Yt−Y^-_{t}Yt−​ created by:</p>
+<ul>
+<li>
+<p>model-generated continuation (“sleep”)</p>
+</li>
+<li>
+<p>or splice/swap/shuffle spans to break global structure while keeping local plausibility</p>
+</li>
+</ul>
+</li>
+</ul>
+<p>Define layer‑wise continuation score:</p>
+<p>Gl(t,Y)=∑j=1Hsl,t+j−1(Y[j])G_l(t, Y) = \sum_{j=1}^{H} s_{l,t+j-1}\big(Y[j]\big)Gl​(t,Y)=j=1∑H​sl,t+j−1​(Y[j])</p>
+<p>(where sl,ts_{l,t}sl,t​ is still computed cheaply using embedding gathers; for negatives you only need to score the actual negative tokens present in Y−Y^-Y−, not the whole vocab.)</p>
+<p>Now do a contrastive “positive continuation beats negative continuation” loss:</p>
+<p>Ll,t(3)=softplus(m−(Gl(t,Yt+)−Gl(t,Yt−)))\mathcal{L}^{(3)}_{l,t} = \mathrm{softplus}\big(m - (G_l(t,Y^+_t) - G_l(t,Y^-_t))\big)Ll,t(3)​=softplus(m−(Gl​(t,Yt+​)−Gl​(t,Yt−​)))</p>
+<p>Optionally with multiple negatives per ttt.</p>
+<p><strong>Why it’s attractive</strong></p>
+<ul>
+<li>
+<p>Forces multi-token, cross-time constraints.</p>
+</li>
+<li>
+<p>Makes “sleep-phase” style negatives conceptually natural: the model generates coherent-looking continuations that are still wrong relative to the data’s continuation.</p>
+</li>
+</ul>
+<p><strong>Hard negatives</strong></p>
+<ul>
+<li>
+<p>Model-generated continuations are naturally hard (especially if generated from a stronger proposal head or a deeper layer).</p>
+</li>
+<li>
+<p>You can mix in “structural” negatives (span swap, entity swap) to explicitly target global consistency failures.</p>
+</li>
+</ul>
+<p><strong>Wake/sleep compatibility</strong></p>
+<ul>
+<li>This is the most directly compatible with wake/sleep: wake uses real continuations; sleep generates negative continuations.</li>
+</ul>
+<hr>
+<h2 id="how-to-implement-these-in-a-block-local-ff-like-transformer">How to implement these in a block-local FF-like Transformer</h2>
+<p>A practical block-local training skeleton (for any of the above losses):</p>
+<ol>
+<li>
+<p>Run embeddings once to get h0,:h_{0,:}h0,:​.</p>
+</li>
+<li>
+<p>For each block lll:</p>
+<ul>
+<li>
+<p>Feed <strong>detached</strong> input to the block: hl,:=Blockl(stopgrad(hl−1,:))h_{l,:} = \mathrm{Block}_l(\mathrm{stopgrad}(h_{l-1,:}))hl,:​=Blockl​(stopgrad(hl−1,:​))</p>
+</li>
+<li>
+<p>Compute the block’s local loss ∑tLl,t\sum_t \mathcal{L}_{l,t}∑t​Ll,t​ using hl,th_{l,t}hl,t​ only.</p>
+</li>
+</ul>
+</li>
+<li>
+<p>Sum losses across blocks (or step each block separately).</p>
+</li>
+<li>
+<p>Backward once; because inputs were detached, gradients stay inside each block.</p>
+</li>
+</ol>
+<p>Key point: candidate scoring never needs full vocab; it’s gather dot-products against E[w]E[w]E[w] for w∈Ctw\in C_tw∈Ct​.</p>
+<hr>
+<h2 id="proposal-mechanism-for-hard-negatives-critical">Proposal mechanism for hard negatives (critical)</h2>
+<p>Hard negatives are easiest if you have a <em>proposal distribution</em> πt(w)\pi_t(w)πt​(w) that’s already somewhat aligned with the task.</p>
+<p>Three practical proposals (in increasing “FF purity risk”):</p>
+<ol>
+<li>
+<p><strong>Final-layer proposal, stop-grad</strong><br>
+Use the current model’s <em>top-layer</em> logits to select top‑kkk tokens for each ttt, but treat those selections and scores as stop-grad when training lower blocks.</p>
+<ul>
+<li>
+<p>Cheap, very effective.</p>
+</li>
+<li>
+<p>Risk: if the final layer is bad early, negatives are not hard.</p>
+</li>
+</ul>
+</li>
+<li>
+<p><strong>Deeper-layer proposal for shallower blocks</strong><br>
+When training block lll, sample negatives from block l+ql+ql+q (with stop-grad). This encourages a coarse-to-fine hierarchy.</p>
+<ul>
+<li>Helps keep deeper layers relevant.</li>
+</ul>
+</li>
+<li>
+<p><strong>External lightweight proposal (frozen or separately trained)</strong><br>
+E.g., a small n‑gram, a tiny backprop LM, or even a cached KNN proposal. This breaks circularity in early training.</p>
+<ul>
+<li>“Less pure,” but often necessary for bootstrapping.</li>
+</ul>
+</li>
+</ol>
+<p>In all cases: mix proposal negatives with in-batch and random for diversity.</p>
+<hr>
+<h2 id="add-global-sync-without-end-to-end-backprop">Add “global sync” without end-to-end backprop</h2>
+<p>Two low-cost “global coordination” add-ons that do not require full vocab:</p>
+<h3 id="a-cross-layer-distribution-alignment-on-candidate-sets">A) Cross-layer distribution alignment on candidate sets</h3>
+<p>Compute candidate-set distributions pl,t(⋅∣Ct)p_{l,t}(\cdot\mid C_t)pl,t​(⋅∣Ct​) and align them to a reference (typically the top layer) with stop-grad:</p>
+<p>Ll,tsync=KL(stopgrad(pL,t(⋅∣Ct)) ∥ pl,t(⋅∣Ct))\mathcal{L}^{sync}_{l,t} = \mathrm{KL}\left(\mathrm{stopgrad}\left(p_{L,t}(\cdot\mid C_t)\right)\ \|\ p_{l,t}(\cdot\mid C_t)\right)Ll,tsync​=KL(stopgrad(pL,t​(⋅∣Ct​)) ∥ pl,t​(⋅∣Ct​))</p>
+<ul>
+<li>
+<p>Only computed on CtC_tCt​, so it’s cheap.</p>
+</li>
+<li>
+<p>Encourages global agreement while each block still trains locally.</p>
+</li>
+</ul>
+<h3 id="b-global-goodness-offset-collaborative-scalar">B) Global goodness offset (“collaborative” scalar)</h3>
+<p>If you’re using a scalar continuation goodness GlG_lGl​ (Goodness 3) or even token-level goodness summaries, you can add a stop-grad global term:</p>
+<p>g~l=gl+α⋅stopgrad(∑r≠lgr)\tilde{g}_l = g_l + \alpha \cdot \mathrm{stopgrad}\Big(\sum_{r\neq l} g_r\Big)g~​l​=gl​+α⋅stopgrad(r=l∑​gr​)</p>
+<p>and train with g~l\tilde g_lg~​l​. This is the scalar version of “global coordination” and tends to reduce the “only early layers matter” failure mode.</p>
+<hr>
+<h2 id="recommendation-what-to-try-first">Recommendation: what to try first</h2>
+<p>If you want the fastest path to “works on nanoGPT-scale”:</p>
+<ol>
+<li><strong>Goodness 2 (candidate-set CE)</strong> + mixed hard negatives + detach boundaries</li>
+</ol>
+<ul>
+<li>It most closely matches standard LM training signals while avoiding full softmax.</li>
+</ul>
+<ol start="2">
+<li>Add <strong>sync KL on candidate sets</strong> (align intermediate blocks to top block with stop-grad)</li>
+</ol>
+<ul>
+<li>This is an inexpensive coordination mechanism.</li>
+</ul>
+<ol start="3">
+<li>Add <strong>Goodness 3 (continuation contrast)</strong> once token-level learning works</li>
+</ol>
+<ul>
+<li>This is the most direct lever for “global characteristics.”</li>
+</ul>
+<p>Then, if you still want wake/sleep separation:</p>
+<ul>
+<li>Try it <em>after</em> interleaved training is stable, and start with short sleep bursts (not thousands of steps) to avoid optimizer brittleness.</li>
+</ul>
+<hr>
+<h2 id="two-design-choices-you-should-decide-early-they-matter">Two design choices you should decide early (they matter)</h2>
+<ol>
+<li><strong>Do you tie embeddings across layers?</strong><br>
+If all layers share the same EEE, then every block is trying to shape the same token geometry. This can help alignment, but it can also create coupling. A compromise:</li>
+</ol>
+<ul>
+<li>tie EEE globally, but only allow some layers to update it (e.g., top layer + maybe one auxiliary).</li>
+</ul>
+<ol start="2">
+<li><strong>Depth scheduling (avoid “early block does everything”)</strong><br>
+To keep deep blocks relevant:</li>
+</ol>
+<ul>
+<li>
+<p>smaller margin / weaker objective early, stronger later</p>
+</li>
+<li>
+<p>or restrict early blocks to coarse targets (e.g., token clusters) and refine later</p>
+</li>
+</ul>
+<hr>
+<p>If you specify:</p>
+<ul>
+<li>
+<p>model size (e.g., nanoGPT 6-layer / d=384)</p>
+</li>
+<li>
+<p>vocab type (char vs BPE)</p>
+</li>
+<li>
+<p>and whether you want strict wake/sleep or interleaved training</p>
+</li>
+</ul>
+<p>I can translate the above into a concrete training loop with exact tensors, where to detach, candidate set construction, and a default set of hyperparameters (K, margins/temperatures, sync weights) that are usually stable.</p>
+<h2 id="user-8">User</h2>
+<p>Figure out the best way to train a transformer using hintons forward forward so it maintains its global characteristics without falling back to the highly tangled representations encouraged by backprop</p>
+<h2 id="assistant-8">Assistant</h2>
+<p>Thought for 12m 12s</p>
+<h2 id="what-breaks-when-you-naively-port-forwardforward-to-transformers-1">What breaks when you naively port Forward–Forward to Transformers</h2>
+<p>Hinton’s Forward–Forward (FF) replaces end-to-end backprop with <em>layer-local</em> objectives trained from two forward passes: a <strong>positive</strong> pass (real/consistent input) and a <strong>negative</strong> pass (corrupted/inconsistent input). Each layer learns to yield <strong>high goodness</strong> on positives and <strong>low goodness</strong> on negatives.</p>
+<p>For Transformers, the main failure modes are:</p>
+<ol>
+<li>
+<p><strong>Inter-layer isolation kills “global” behavior</strong><br>
+Plain FF trains each layer “as if it were the whole model,” so early layers don’t get pressured to produce features that later layers can actually use. This lack of collaboration has been analyzed explicitly, and a simple modification was proposed to inject global information into each layer’s local objective.</p>
+</li>
+<li>
+<p><strong>Normalization collides with classic goodness choices</strong><br>
+If goodness is something like “sum of squared activations,” layer normalization can wipe out the signal (or make it trivial/constant), so you must compute goodness at the right point or redesign it. Hinton notes this directly.<br>
+There are newer “LN-compatible” goodness designs (e.g., mean-goodness + layer norm) intended to make deep FF training stable.</p>
+</li>
+<li>
+<p><strong>Negatives must be <em>globally</em> hard, not just locally noisy</strong><br>
+If negatives are too easy (random garbage), layers learn shortcuts; if they’re too different from data, you don’t learn data structure. Work on self-contrastive FF emphasizes that the <em>quality/structure of negatives</em> is a key limiter and proposes systematic generation from the data distribution.</p>
+</li>
+<li>
+<p><strong>If you “finish” with backprop, you often undo the point</strong><br>
+If you FF-pretrain then do full end-to-end BP fine-tuning, you’ll typically reintroduce the very representation entanglement you’re trying to avoid. One reason FF is interesting here is that FF objectives can yield sparse, ensemble-like internal structure that’s not typically seen with standard BP training.</p>
+</li>
+</ol>
+<hr>
+<h2 id="a-strong-recipe-collaborative-ln-compatible-globally-structured-negatives-1">A strong recipe: Collaborative + LN-compatible + globally-structured negatives</h2>
+<p>The most defensible “best way” (based on what’s worked in the literature so far) is to combine four ideas:</p>
+<ol>
+<li>
+<p><strong>Blockwise FF (treat each Transformer block as a “layer”)</strong></p>
+</li>
+<li>
+<p><strong>Collaborative FF (inject global goodness into each block’s local objective)</strong></p>
+</li>
+<li>
+<p><strong>LN-compatible goodness (so Transformers don’t trivialize goodness)</strong></p>
+</li>
+<li>
+<p><strong>Negatives that specifically break <em>global coherence</em> while preserving local plausibility</strong></p>
+</li>
+</ol>
+<p>A practical instantiation is:</p>
+<h3 id="1-architecture-constraints-that-make-ff-work-in-a-transformer-1">1) Architecture constraints that make FF work in a Transformer</h3>
+<p><strong>Use a Pre-LN Transformer</strong> (standard in modern LLMs anyway), but be explicit about <em>where</em> you measure goodness.</p>
+<p>For block lll, you have something like:</p>
+<ul>
+<li>
+<p>ul=LN(xl)u_l = \mathrm{LN}(x_l)ul​=LN(xl​)</p>
+</li>
+<li>
+<p>al=Attnl(ul)a_l = \mathrm{Attn}_l(u_l)al​=Attnl​(ul​), xl′=xl+alx'_l = x_l + a_lxl′​=xl​+al​</p>
+</li>
+<li>
+<p>vl=LN(xl′)v_l = \mathrm{LN}(x'_l)vl​=LN(xl′​)</p>
+</li>
+<li>
+<p>ml=MLPl(vl)m_l = \mathrm{MLP}_l(v_l)ml​=MLPl​(vl​), xl+1=xl′+mlx_{l+1} = x'_l + m_lxl+1​=xl′​+ml​</p>
+</li>
+</ul>
+<p><strong>Key FF requirement:</strong> goodness must be computed on an activation that is not made invariant/constant by LN.</p>
+<p>Two robust options:</p>
+<ul>
+<li>
+<p><strong>Option A (Hinton-style):</strong> compute goodness on <em>pre-LN</em> hidden activities (he explicitly defines goodness using activities “before layer normalization”).</p>
+</li>
+<li>
+<p><strong>Option B (DeeperForward-style):</strong> use <strong>mean goodness</strong> while using LN for the representation stream (decoupling “goodness” from “features”); this is explicitly motivated as fixing scaling + deactivated neuron issues.</p>
+</li>
+</ul>
+<p>For Transformers, Option B is usually easier:</p>
+<ul>
+<li>
+<p>Let HlH_lHl​ be a block-local activation tensor you choose (common: the MLP pre-activation after a ReLU/GELU or an equivalent “post-nonlinearity” state).</p>
+</li>
+<li>
+<p>Define <strong>goodness</strong> as a mean over features (and optionally tokens):</p>
+<p>gl=mean(Hl)g_l = \mathrm{mean}(H_l)gl​=mean(Hl​)</p>
+</li>
+<li>
+<p>Define the <strong>representation passed upward</strong> as the LN-normalized stream (standard Transformer residual stream).</p>
+</li>
+</ul>
+<p>This mirrors the “goodness is mean; features are LN outputs” separation.</p>
+<h3 id="2-positivenegative-construction-that-forces-global-structure-1">2) Positive/negative construction that forces global structure</h3>
+<p>To preserve “global characteristics,” your negatives must break <em>global</em> constraints while keeping <em>local</em> statistics plausible.</p>
+<p>Use a <strong>mixture of negative types</strong>:</p>
+<ul>
+<li>
+<p><strong>Local-preserving, global-breaking (the important ones):</strong></p>
+<ul>
+<li>
+<p>swap two long spans (A … B → B … A)</p>
+</li>
+<li>
+<p>replace a middle span with one from another sample (in-batch “span transplant”)</p>
+</li>
+<li>
+<p>sentence-order shuffles (for multi-sentence text)</p>
+</li>
+<li>
+<p>entity/attribute swaps (replace all mentions of one entity with another from batch)</p>
+</li>
+</ul>
+</li>
+<li>
+<p><strong>Light local corruption (for robustness, not for global structure):</strong></p>
+<ul>
+<li>
+<p>small token masking/dropout</p>
+</li>
+<li>
+<p>small token substitutions sampled from unigram or same-POS bucket</p>
+</li>
+</ul>
+</li>
+</ul>
+<p>If you want a simple default that avoids bespoke negative generators, borrow the <strong>self-contrastive</strong> pattern: positives/negatives formed directly from the batch rather than a separate negative model.<br>
+(You will still want the <em>span-level</em> variants above if your explicit goal is “global characteristics.”)</p>
+<h3 id="3-layer-local-losses-that-dont-collapse-early-layers-1">3) Layer-local losses that don’t collapse early layers</h3>
+<p>A plain FF layer loss is “classify positive vs negative from goodness,” using a logistic mapping and a threshold.</p>
+<p>For Transformers, you will usually get better behavior if you add a <strong>contrastive term</strong> at each block in addition to (or replacing) the thresholded goodness classification—this is exactly the direction taken by work extending FF to Vision Transformers using contrastive-inspired losses and a depth-dependent margin to avoid early-layer collapse.</p>
+<p>So for each block lll, compute a pooled representation rlr_lrl​ (e.g., CLS token or mean pooling over tokens). Then use:</p>
+<p><strong>(a) FF goodness classification (local):</strong></p>
+<ul>
+<li>
+<p>gl+g_l^{+}gl+​ from positive sample, gl−g_l^{-}gl−​ from negative</p>
+</li>
+<li>
+<p>logistic probability p=σ(gl−θ)p = \sigma(g_l - \theta)p=σ(gl​−θ)</p>
+</li>
+<li>
+<p>loss:</p>
+<p>LlFF=BCE(p+,1)+BCE(p−,0)\mathcal{L}^{FF}_l = \mathrm{BCE}(p^{+}, 1) + \mathrm{BCE}(p^{-}, 0)LlFF​=BCE(p+,1)+BCE(p−,0)</p>
+</li>
+</ul>
+<p><strong>(b) Contrastive alignment term (optional but recommended):</strong></p>
+<ul>
+<li>
+<p>Use InfoNCE or supervised-contrastive if you have labels</p>
+</li>
+<li>
+<p>If you want to prevent early layers from over-clustering (a known problem), use a <strong>layer-dependent margin</strong> (a “marginal contrastive” idea) so early blocks only learn <em>some</em> similarity, later blocks enforce tighter grouping.</p>
+</li>
+</ul>
+<p>Total:</p>
+<p>Ll=λffLlFF+λctrLlCTR\mathcal{L}_l = \lambda_{ff}\mathcal{L}^{FF}_l + \lambda_{ctr}\mathcal{L}^{CTR}_lLl​=λff​LlFF​+λctr​LlCTR​</p>
+<h3 id="4-add-collaboration-without-backprop-global-goodness-injection-1">4) Add collaboration without backprop: “global goodness injection”</h3>
+<p>This is the piece that most directly targets your “maintains global characteristics” requirement.</p>
+<p>Layer-collaboration work proposes modifying each layer’s local probability by adding a <strong>stop-gradient global term</strong> based on other layers’ goodness, so each layer optimizes its parameters with awareness of the network-wide state, but still <em>without</em> end-to-end backprop.</p>
+<p>Concretely:</p>
+<ul>
+<li>
+<p>Compute goodness values g1,…,gLg_1,\dots,g_Lg1​,…,gL​ for the current sample (positive or negative).</p>
+</li>
+<li>
+<p>For layer lll, define:</p>
+<p>γl=∑t≠lstopgrad(gt)\gamma_l = \sum_{t\neq l} \mathrm{stopgrad}(g_t)γl​=t=l∑​stopgrad(gt​)</p>
+</li>
+<li>
+<p>Use:</p>
+<p>pl=σ(gl+αγl−θ)p_l = \sigma(g_l + \alpha\gamma_l - \theta)pl​=σ(gl​+αγl​−θ)</p>
+</li>
+<li>
+<p>Then do BCE on plp_lpl​ vs {positive=1, negative=0}.</p>
+</li>
+</ul>
+<p>This gives you a mechanism for global coordination while keeping updates local in the FF sense.</p>
+<hr>
+<h2 id="preventing-backprop-like-entanglement-inside-ff-training-1">Preventing “backprop-like entanglement” inside FF training</h2>
+<p>Even with FF, a Transformer can learn overly distributed, hard-to-parse features unless you bias it toward modularity. Two pragmatic additions:</p>
+<h3 id="a-headfeature-group-specialization-pressure-1">A) Head/feature-group specialization pressure</h3>
+<p>A channel-wise competitive learning variant of FF explicitly aims to improve feature partitioning and compositionality (developed for CNNs, but the principle maps cleanly to Transformer “groups” such as heads or MLP channel blocks).</p>
+<p>Transformer adaptation (direct, effective):</p>
+<ul>
+<li>
+<p>Partition the hidden dimension into GGG groups (or treat attention heads as groups).</p>
+</li>
+<li>
+<p>Compute goodness per-group gl,gg_{l,g}gl,g​.</p>
+</li>
+<li>
+<p>Add a mild regularizer that encourages <em>few</em> groups to be strongly active per sample (k-winners / sparsemax-like behavior), which tends to reduce entanglement.</p>
+</li>
+</ul>
+<h3 id="b-keep-ff-pure-dont-do-end-to-end-bp-fine-tuning-1">B) Keep FF “pure”: don’t do end-to-end BP fine-tuning</h3>
+<p>If you BP-fine-tune all blocks, you’ll typically lose the sparse-ensemble structure that FF objectives can produce. Evidence that FF-trained networks can develop sparse, category-specific ensembles (and that this sparsity pattern differs from typical BP training) supports keeping the training regime consistent if interpretability/modularity is a goal.</p>
+<p>If you must add a supervised head:</p>
+<ul>
+<li>Train <strong>only</strong> a small readout / classifier head with BP and freeze the FF-trained backbone (or use tiny adapters), so you don’t re-entangle the internal representation.</li>
+</ul>
+<hr>
+<h2 id="minimal-pseudo-algorithm-blockwise-collaborative-globally-hard-negatives-1">Minimal pseudo-algorithm (blockwise, collaborative, globally-hard negatives)</h2>
+<p>For batch XXX:</p>
+<ol>
+<li>Create two versions:</li>
+</ol>
+<ul>
+<li>
+<p>X+X^{+}X+: original / consistent</p>
+</li>
+<li>
+<p>X−X^{-}X−: globally-corrupted but locally plausible (span swap/transplant, etc.)</p>
+</li>
+</ul>
+<ol start="2">
+<li>
+<p>Forward both through the model, but <strong>detach between blocks</strong> so each block’s gradients don’t flow into previous blocks.</p>
+</li>
+<li>
+<p>For each block lll:</p>
+</li>
+</ol>
+<ul>
+<li>
+<p>Extract chosen activation tensor Hl+,Hl−H_l^{+}, H_l^{-}Hl+​,Hl−​</p>
+</li>
+<li>
+<p>Compute goodness gl+=mean(Hl+),  gl−=mean(Hl−)g_l^{+}=\mathrm{mean}(H_l^{+}),\; g_l^{-}=\mathrm{mean}(H_l^{-})gl+​=mean(Hl+​),gl−​=mean(Hl−​) (LN-compatible design)</p>
+</li>
+<li>
+<p>Compute collaboration terms:</p>
+<p>γl+=∑t≠lstopgrad(gt+),γl−=∑t≠lstopgrad(gt−)\gamma_l^{+}=\sum_{t\neq l}\mathrm{stopgrad}(g_t^{+}),\quad \gamma_l^{-}=\sum_{t\neq l}\mathrm{stopgrad}(g_t^{-})γl+​=t=l∑​stopgrad(gt+​),γl−​=t=l∑​stopgrad(gt−​)</p>
+</li>
+<li>
+<p>Local FF loss:</p>
+<p>LlFF=BCE(σ(gl++αγl+−θ),1)+BCE(σ(gl−+αγl−−θ),0)\mathcal{L}^{FF}_l = \mathrm{BCE}(\sigma(g_l^{+}+\alpha\gamma_l^{+}-\theta), 1) + \mathrm{BCE}(\sigma(g_l^{-}+\alpha\gamma_l^{-}-\theta), 0)LlFF​=BCE(σ(gl+​+αγl+​−θ),1)+BCE(σ(gl−​+αγl−​−θ),0)</p>
+</li>
+<li>
+<p>Optional contrastive term on pooled representations with depth-dependent margin (helps prevent early-layer collapse)</p>
+</li>
+<li>
+<p>Update <strong>only block lll</strong>’s parameters.</p>
+</li>
+</ul>
+<p>This retains FF’s local update property while injecting global coordination and forcing global structure via negatives.</p>
+<hr>
+<h2 id="notes-specific-to-transformer-as-an-llm-if-thats-your-intent-1">Notes specific to “Transformer as an LLM” (if that’s your intent)</h2>
+<p>The literature is much stronger on FF for classification/representation learning and on Transformer-like models in vision than on full-scale autoregressive LLM training with FF. The most direct Transformer evidence I can point to is ViT-focused FF extensions using contrastive losses.</p>
+<p>If you want autoregressive next-token prediction without falling back to BP, the most workable FF-style framing is to treat the model as an <strong>energy/goodness scorer</strong> for (context, candidate next token) and train it with <strong>sampled negatives</strong> (NCE-like), rather than full softmax over the vocabulary. This matches FF’s positive/negative discrimination spirit.<br>
+The practical constraint is inference cost: you need a candidate set (proposal model or retrieval) rather than scoring all vocab tokens.</p>
+<hr>
+<h2 id="the-shortest-best-way-summary-1">The shortest “best way” summary</h2>
+<p>If your goal is “FF-trained Transformer that stays globally coherent and avoids BP-style entanglement,” the highest-leverage combination is:</p>
+<ul>
+<li>
+<p><strong>Global-coherence negatives</strong> (span-level swaps/transplants, sentence shuffles) + <strong>self-contrastive in-batch negatives</strong></p>
+</li>
+<li>
+<p><strong>Collaborative FF</strong> (stop-gradient global goodness term injected into each block’s local objective)</p>
+</li>
+<li>
+<p><strong>LN-compatible goodness</strong> (e.g., mean-goodness + LN-separated representation stream)</p>
+</li>
+<li>
+<p><strong>Depth-scheduled contrastive pressure</strong> (margin increases with depth) to prevent early blocks collapsing into brittle clusters</p>
+</li>
+<li>
+<p><strong>No end-to-end BP fine-tuning</strong> (or freeze backbone if you add a supervised head), to preserve the sparse/modular structure FF can induce</p>
+</li>
+</ul>
+<p>If you specify the exact setting (encoder-only MLM, decoder-only AR LM, or encoder–decoder), I can pin down: (1) the exact positive/negative construction, (2) where to measure goodness in the block, and (3) the lowest-cost inference scheme consistent with FF.</p>
+<h2 id="user-9">User</h2>
+<p>Do you train each layer separately in order or what</p>
+<h2 id="assistant-9">Assistant</h2>
+<p>Thought for 6m 37s</p>
+<p>You still <em>compute</em> the network in order (block 1 → block 2 → …), but you do <strong>not</strong> have to “train layer 1 to completion, freeze it, then move to layer 2” unless you choose that schedule.</p>
+<p>With Forward–Forward on a Transformer, the most common/usable answer is:</p>
+<ul>
+<li>
+<p><strong>Each block has its own local objective</strong></p>
+</li>
+<li>
+<p>You <strong>update all blocks during training</strong>, but you <strong>block gradients between blocks</strong> (detach/stop‑grad) so no end-to-end backprop happens.</p>
+</li>
+</ul>
+<p>Below are the three practical training schedules, in order of what usually works best.</p>
+<hr>
+<h2 id="1-recommended-interleaved-blockwise-training-all-blocks-every-step-1">1) Recommended: interleaved blockwise training (all blocks, every step)</h2>
+<p><strong>Idea:</strong> On each minibatch, you do pos/neg forward passes, compute a <em>local loss per block</em>, and update blocks. The key is that the input to each block is <strong>detached</strong>, so gradients do not flow into earlier blocks.</p>
+<h3 id="what-this-means-concretely-1">What this means concretely</h3>
+<ul>
+<li>
+<p>You run embeddings once to get the initial residual stream.</p>
+</li>
+<li>
+<p>For block</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">ebnf</span></div><pre><code class="hljs language-ebnf"><span class="hljs-attribute">l</span>
+</code></pre></div><p>, you feed</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">scss</span></div><pre><code class="hljs language-scss"><span class="hljs-attribute">x</span><span class="hljs-selector-class">.detach</span>()
+</code></pre></div><p>into the block.</p>
+</li>
+<li>
+<p>You compute block</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">ebnf</span></div><pre><code class="hljs language-ebnf"><span class="hljs-attribute">l</span>
+</code></pre></div><p>’s goodness and local loss from block-local activations.</p>
+</li>
+<li>
+<p>That loss only updates block</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">ebnf</span></div><pre><code class="hljs language-ebnf"><span class="hljs-attribute">l</span>
+</code></pre></div><p>parameters (because the input was detached).</p>
+</li>
+</ul>
+<h3 id="minimal-pseudocode-sketch-1">Minimal pseudocode sketch</h3>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">css</span></div><pre><code class="hljs language-css">Python# x_pos, x_neg: tokenized positives / negativesh_pos = <span class="hljs-built_in">embed</span>(x_pos)h_neg = <span class="hljs-built_in">embed</span>(x_neg)total_loss = <span class="hljs-number">0</span>for l, block in <span class="hljs-built_in">enumerate</span>(blocks):    h_pos_in = h_pos.<span class="hljs-built_in">detach</span>()    h_neg_in = h_neg.<span class="hljs-built_in">detach</span>()    h_pos, aux_pos = <span class="hljs-built_in">block</span>(h_pos_in, return_goodness_acts=True)    h_neg, aux_neg = <span class="hljs-built_in">block</span>(h_neg_in, return_goodness_acts=True)    g_pos = <span class="hljs-built_in">goodness</span>(aux_pos)   # block-local    g_neg = <span class="hljs-built_in">goodness</span>(aux_neg)    loss_l = <span class="hljs-built_in">ff_loss</span>(g_pos, g_neg)   # BCE / margin / etc.    total_loss = total_loss + loss_ltotal_loss.<span class="hljs-built_in">backward</span>()optimizer.<span class="hljs-built_in">step</span>()optimizer.<span class="hljs-built_in">zero_grad</span>()
+</code></pre></div><p>This is “train all layers at once,” but still strictly <strong>local learning</strong> because every block’s input was detached.</p>
+<hr>
+<h2 id="2-if-you-use-collaborativeglobal-goodness-two-phase-per-step-still-not-sequential-training-1">2) If you use “collaborative/global goodness”: two-phase per step (still not sequential training)</h2>
+<p>If your block loss uses a term like “other layers’ goodness” (global coordination), you usually want a <strong>two-phase</strong> step so each block can see the other blocks’ goodness values without letting gradients leak.</p>
+<h3 id="two-phase-pattern-1">Two-phase pattern</h3>
+<p><strong>Phase A (no gradients):</strong> compute goodness values for all blocks on pos/neg.</p>
+<ul>
+<li>
+<p>Cache</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">css</span></div><pre><code class="hljs language-css">g_pos<span class="hljs-selector-attr">[l]</span>
+</code></pre></div><p>,</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">css</span></div><pre><code class="hljs language-css">g_neg<span class="hljs-selector-attr">[l]</span>
+</code></pre></div><p>.</p>
+</li>
+</ul>
+<p><strong>Phase B (with gradients, local):</strong> run blocks again with detached inputs and compute each block’s loss using:</p>
+<ul>
+<li>
+<p>its own</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">ebnf</span></div><pre><code class="hljs language-ebnf"><span class="hljs-attribute">g_l</span>
+</code></pre></div><p>(with grad)</p>
+</li>
+<li>
+<p>other blocks’</p>
+<div class="code-block"><div class="code-header"><div class="code-dots"><span></span><span></span><span></span></div><span class="code-lang">dust</span></div><pre><code class="hljs language-dust"><span class="language-xml">g_</span><span class="hljs-template-variable">{t≠l}</span><span class="language-xml">
+</span></code></pre></div><p>as <strong>stop-grad cached scalars</strong></p>
+</li>
+</ul>
+<p>This keeps the “global coordination signal” while preserving the FF constraint (no end-to-end BP).</p>
+<hr>
+<h2 id="3-optional-greedy-sequential-train-in-order-freezing-earlier-blocks-1">3) Optional: greedy sequential (train in order, freezing earlier blocks)</h2>
+<p>This is the “train block 1, freeze it; then block 2; …” approach.</p>
+<p>It can work, but it has downsides for Transformers:</p>
+<ul>
+<li>
+<p>later blocks are forced to adapt to whatever quirks early blocks learned</p>
+</li>
+<li>
+<p>it tends to reduce cross-block coordination unless you add extra mechanisms</p>
+</li>
+</ul>
+<p>I only use this as a stabilization trick when training is collapsing:</p>
+<ul>
+<li>
+<p>train first 2–4 blocks until they produce non-trivial goodness separation</p>
+</li>
+<li>
+<p>then switch to interleaved training for all blocks</p>
+</li>
+</ul>
+<hr>
+<h2 id="so-the-direct-answer-1">So the direct answer</h2>
+<p>You usually <strong>do not</strong> train each layer “separately in order” to completion.</p>
+<p>You typically:</p>
+<ul>
+<li>
+<p><strong>update every block every step</strong>, but</p>
+</li>
+<li>
+<p><strong>prevent gradients from flowing across blocks</strong> (detach between blocks),<br>
+so each block is trained with its own FF objective while still receiving inputs produced by earlier blocks.</p>
+</li>
+</ul>
+<hr>
+<h2 id="one-implementation-detail-that-matters-1">One implementation detail that matters</h2>
+<p>There are two clean ways to implement “local updates”:</p>
+<ol>
+<li>
+<p><strong>Single optimizer + one backward on summed local losses</strong><br>
+Works if you detach between blocks. Each block only gets gradients from its own local loss.</p>
+</li>
+<li>
+<p><strong>Per-block optimizers + per-block backward/step</strong><br>
+Lets you step blocks independently (useful if you want different learning rates or schedules per depth). Slightly more bookkeeping.</p>
+</li>
+</ol>
+<p>Both are compatible with “not training in order.”</p>
+<hr>
+<p>If you tell me whether you mean <strong>decoder-only (autoregressive)</strong> vs <strong>encoder-only / masked</strong> Transformer, I can give the exact pos/neg construction and where to tap activations for goodness so the training doesn’t collapse under layer norm.</p>
+<h2 id="user-10">User</h2>
+<p>what are teh most relevant papers for me to review? has anyone tried to do autoregressive or similar language models with FF or similar?</p>
+<h2 id="assistant-10">Assistant</h2>
+<p>Thought for 15m 37s</p>
+<h2 id="assistant-11">Assistant</h2>
+<h2 id="most-relevant-forward-forward-papers-to-review-with-an-eye-toward-transformers-1">Most relevant Forward-Forward papers to review (with an eye toward Transformers)</h2>
+<h3 id="1-original-baseline-forward-forward-1">1) Original / baseline Forward-Forward</h3>
+<ul>
+<li><strong>Hinton (2022): “The Forward-Forward Algorithm: Some Preliminary Investigations”</strong><br>
+The canonical definition of FF: two forward passes (positive vs negative), layer-local “goodness” objectives, and greedy layer-wise training as the default scheme.</li>
+</ul>
+<h3 id="2-fixing-the-layers-dont-collaborate-problem-directly-relevant-to-your-concern-1">2) Fixing the “layers don’t collaborate” problem (directly relevant to your concern)</h3>
+<ul>
+<li><strong>Lorberbom et al. (AAAI 2024): “Layer Collaboration in the Forward-Forward Algorithm”</strong><br>
+Explicitly targets the main failure mode of vanilla FF in deep nets: independently trained layers don’t coordinate well, which matters even more in Transformers.</li>
+</ul>
+<h3 id="3-better-negatives-more-stable-training-important-for-anything-beyond-toy-tasks-1">3) Better negatives / more stable training (important for anything beyond toy tasks)</h3>
+<ul>
+<li>
+<p><strong>Ororbia &amp; Mali (2023): “The Predictive Forward-Forward Algorithm”</strong><br>
+Combines FF ideas with predictive-coding style circuitry (representation + generative circuit). If you’re thinking about sequence prediction or “world-model-ish” training, this is one of the most conceptually relevant extensions.</p>
+</li>
+<li>
+<p><strong>Chen et al. (Nature Communications 2025): “Self-Contrastive Forward-Forward (SCFF)”</strong><br>
+A modernized FF-style method emphasizing self-contrast and improved negative handling; one of the more prominent “FF, but competitive” directions.</p>
+</li>
+</ul>
+<h3 id="4-scalingdepth-and-goodness-design-1">4) Scaling/depth and “goodness” design</h3>
+<ul>
+<li>
+<p><strong>Sun et al. (ICLR 2025): “DEEPERFORWARD”</strong><br>
+Focuses on making FF work better as depth increases (goodness design + normalization choices + efficiency strategy). Useful if you’re thinking “Transformer-depth-like” even if experiments are mostly CNN-ish.</p>
+</li>
+<li>
+<p><strong>Wu et al. (2024): “Distance-Forward Learning”</strong><br>
+Reformulates/improves FF using a distance/metric-learning lens; relevant because Transformers often benefit from representation shaping objectives that look more like metric learning than “sum of squares.”</p>
+</li>
+<li>
+<p><strong>Shah et al. (2025): “Large Scale Benchmarking of Goodness Functions for the Forward-Forward Algorithm”</strong><br>
+If you’re trying to prevent “tangled representations,” you’ll likely end up changing the goodness function—this paper is directly about that design space.</p>
+</li>
+<li>
+<p><strong>Gong et al. (2025): “FAUST: Reshaping the Forward-Forward Algorithm with a Similarity-Based Objective”</strong><br>
+Connects FF to similarity-learning losses; helpful if your plan is to enforce more global/consistent representational geometry.</p>
+</li>
+</ul>
+<hr>
+<h2 id="has-anyone-tried-transformers-with-ff-and-what-kind-1">“Has anyone tried Transformers with FF?” (and what kind)</h2>
+<h3 id="vision-transformers-closest-clean-transformer-architecture-ff-work-1">Vision Transformers (closest “clean” Transformer-architecture FF work)</h3>
+<ul>
+<li><strong>Aghagolzadeh &amp; Ezoji (2025): “Contrastive Forward-Forward: A Training Algorithm of Vision Transformer”</strong><br>
+One of the more direct “FF-style training applied to a Transformer family architecture” papers (ViT).</li>
+</ul>
+<h3 id="transformers-for-nlp-classification-not-autoregressive-generation-but-nlp-transformers-ff-1">Transformers for NLP classification (not autoregressive generation, but NLP + Transformers + FF)</h3>
+<ul>
+<li><strong>Kim &amp; Yoo (2025): “Replacing Backpropagation with the Forward-Forward (FF) Algorithm in Transformer Models…”</strong><br>
+Proposes FF-based training in a Transformer setting and reports experiments on <strong>IMDB sentiment</strong> (classification). This is relevant if you want to see how someone mapped FF onto attention blocks in practice—but it is not an end-to-end autoregressive LM paper.</li>
+</ul>
+<hr>
+<h2 id="autoregressive-causal-language-models-with-ff-what-exists-as-of-2026-03-02-1">Autoregressive / causal language models with FF: what exists as of 2026-03-02</h2>
+<h3 id="what-i-found-published-citable-1">What I found (published / citable)</h3>
+<p>I did <strong>not</strong> find a widely cited, mainstream paper showing <strong>end-to-end pretraining of a decoder-only autoregressive language model</strong> (GPT-like next-token LM) using <strong>pure Hinton-style FF</strong> at meaningful scale.</p>
+<p>What <em>is</em> out there falls into three buckets:</p>
+<ol>
+<li>
+<p><strong>Transformer + FF, but on classification tasks</strong> (e.g., IMDB sentiment).</p>
+</li>
+<li>
+<p><strong>Patent literature</strong> explicitly discussing forward-forward training applied to tasks including <em>masked</em> or <em>causal language modeling</em>-type setups (useful for ideas about how to construct positives/negatives for language), but it’s not a peer-reviewed scaling result.</p>
+</li>
+<li>
+<p><strong>Community / repo-level attempts</strong> at “mini-GPT with forward-forward,” but not established as a solid research baseline. The Hugging Face thread explicitly notes the lack of generative LM examples and points to experimental repos.</p>
+</li>
+</ol>
+<h3 id="closest-similar-forward-only-methods-actually-used-on-language-models-not-ff-but-highly-relevant-1">Closest “similar, forward-only” methods actually used on language models (not FF, but highly relevant)</h3>
+<p>If your real requirement is “no backprop / no backward pass” (or “avoid global credit assignment”), these are the most relevant LM-adjacent works:</p>
+<ul>
+<li>
+<p><strong>Malladi et al. (NeurIPS 2023): “Fine-Tuning Language Models with Just Forward Passes” (MeZO)</strong><br>
+This is a <em>big deal</em> practically: forward-pass-only optimization for fine-tuning, evaluated on both masked and autoregressive LMs. It’s not FF; it’s zeroth-order optimization. But it’s the most concrete “LMs without backprop” result line I found.</p>
+</li>
+<li>
+<p><strong>Pau &amp; Aymone (2024): “Forward Learning of Large Language Models…” (PEPITA / MEMPEPITA on Transformer LLMs)</strong><br>
+Again, not FF, but explicitly about forward-learning rules on Transformer-based LLMs (and discusses CLM/MLM token-level error setups).</p>
+</li>
+</ul>
+<hr>
+<h2 id="do-you-train-each-layer-separately-in-order-or-what-short-concrete-answer-1">“Do you train each layer separately in order or what?” (short, concrete answer)</h2>
+<ul>
+<li>
+<p><strong>Vanilla Hinton-FF</strong> is <strong>greedy layer-wise</strong>: train layer 1 with its local objective (pos/neg), then freeze it and train layer 2, etc.</p>
+</li>
+<li>
+<p>The main reason people moved beyond vanilla FF is exactly what you’re pointing at: <strong>greedy, isolated layer training tends to harm cross-layer coordination</strong>. The <strong>Layer Collaboration</strong> paper is explicitly about addressing that.</p>
+</li>
+<li>
+<p>Many “FF-like” successors can be interpreted as: keep locality, but introduce <strong>inter-layer signals</strong> (collaboration) and/or <strong>better contrastive setups</strong> (better negatives) so deeper stacks don’t become dysfunctional.</p>
+</li>
+</ul>
+<hr>
+<h2 id="if-your-target-is-specifically-autoregressive-lm-with-ff-what-to-look-for-in-papers-based-on-what-exists-1">If your target is specifically “autoregressive LM with FF”: what to look for in papers (based on what exists)</h2>
+<p>Given the current literature, the practical path is usually:</p>
+<ul>
+<li>
+<p>Start from <strong>FF improvements that fix negatives + collaboration</strong> (Layer Collaboration, SCFF, goodness-function benchmarking).</p>
+</li>
+<li>
+<p>Use the <strong>Transformer implementations that exist (even if classification)</strong> to see where people place local losses inside attention/FFN blocks and how they handle normalization/residuals.</p>
+</li>
+<li>
+<p>Treat <strong>MeZO / PEPITA</strong> as “reference points” for what <em>actually works today</em> on language models without standard backprop, even if they are not FF.</p>
+</li>
+<li>
+<p>Mine the <strong>patent</strong> for explicit suggestions on applying forward-forward training to masked/causal language modeling setups (positive/negative construction ideas).</p>
+</li>
+</ul>
+<p>If you want, I can convert the above into a tighter “reading order” (5–7 items) depending on whether your immediate goal is (a) a working prototype on a small GPT-like model, or (b) inventing a better FF objective that preserves global structure in deep attention stacks.</p>
+<h2 id="user-11">User</h2>
+<p>review all this lit to figure out how we can train an autoregressive generative language model using FF or somethign very similar, and figure out why no one has (and check experimental nano gpt projects to learn more)</p>
+<h2 id="assistant-12">Assistant</h2>
+<p>Thought for 20m 13s</p>
+<h2 id="assistant-13">Assistant</h2>
+<h2 id="what-train-each-layer-separately-means-in-forward-forward-1">What “train each layer separately” means in Forward-Forward</h2>
+<p>In Hinton’s Forward-Forward (FF), <em>each layer/block has its own local objective</em> (“goodness” high on positives, low on negatives), and you typically <strong>update layers using only their local loss</strong> while <strong>stopping gradients between layers</strong> (detach the input to the layer you’re updating).</p>
+<p>So in practice you do something like:</p>
+<ul>
+<li>
+<p>Run a <strong>positive</strong> forward pass (real example) and a <strong>negative</strong> forward pass (corrupted example).</p>
+</li>
+<li>
+<p>For <strong>layer i</strong>, compute a local loss from its activations on those two passes and update <strong>only layer i</strong> (no cross-layer backprop).</p>
+</li>
+<li>
+<p>Move to layer i+1, etc.</p>
+</li>
+</ul>
+<p>The big caveat is that “vanilla” FF can have poor deep-layer usefulness: the <strong>first layer alone can outperform deeper stacks</strong>, indicating weak inter-layer collaboration.<br>
+That’s why the more relevant question for transformers is not only “separately or together?”, but <strong>how to preserve collaboration / global behavior without end-to-end backprop</strong>.</p>
+<h2 id="the-most-relevant-papers-to-review-prioritized-1">The most relevant papers to review (prioritized)</h2>
+<h3 id="core-ff-the-sequencelm-clue-and-warning-1">Core FF + the sequence/LM clue (and warning)</h3>
+<ul>
+<li><strong>Hinton (2022): “The Forward-Forward Algorithm: Some Preliminary Investigations.”</strong><br>
+Defines FF, why normalization is needed to prevent trivial solutions, and explicitly flags sequential learning as a target.<br>
+Critically: Hinton reports an early draft result on <strong>next-character prediction</strong> (predict next character from a window) that he later <strong>could not replicate</strong> and suspected was due to a bug.<br>
+This is one of the strongest “why isn’t there an FF GPT already?” signals.</li>
+</ul>
+<h3 id="fixing-the-deep-networks-dont-collaborate-failure-mode-1">Fixing the “deep networks don’t collaborate” failure mode</h3>
+<ul>
+<li><strong>Lorberbom et al. (2023/2024): “Layer Collaboration in the Forward-Forward Algorithm.”</strong><br>
+Shows FF layers don’t effectively communicate; deeper layers can hurt; proposes <strong>Collaborative Forward-Forward</strong> by using a <strong>global goodness term</strong> (sum of other layers’ goodness) while <em>not</em> backpropagating through those other layers (they use a frozen copy / stop-grad idea).<br>
+For transformers, this is directly relevant to “maintain global characteristics.”</li>
+</ul>
+<h3 id="making-ff-train-deeperstabler-goodness-normalization-residuals-1">Making FF train deeper/stabler (goodness + normalization + residuals)</h3>
+<ul>
+<li><strong>Sun et al. (ICLR 2025): “DeeperForward.”</strong><br>
+Diagnoses squared-norm goodness + normalization issues in deep FF and proposes <strong>mean goodness + layer norm</strong>, plus residual-structure adaptations to help deep learning in FF settings.<br>
+Even though it’s CNN-focused, the <em>design lessons</em> (goodness definition, normalization, residual structure role) map to transformers.</li>
+</ul>
+<h3 id="moving-beyond-hand-crafted-negatives-1">Moving beyond “hand-crafted negatives”</h3>
+<ul>
+<li><strong>Chen et al. (Nature Communications 2025): “Self-Contrastive Forward-Forward.”</strong><br>
+A major direction: reduce dependence on external negative sampling and extend FF-style training to broader regimes including time-series/unsupervised settings.</li>
+</ul>
+<h3 id="ff-but-with-an-explicit-generative-circuit-1">“FF but with an explicit generative circuit”</h3>
+<ul>
+<li><strong>Ororbia &amp; Mali (2023): “The Predictive Forward-Forward Algorithm.”</strong><br>
+Proposes a recurrent system that jointly learns a <strong>representation circuit + directed generative circuit</strong>, and reports classification/reconstruction/synthesis without backprop.<br>
+This is highly relevant if your plan is “use a generator to produce negatives” (or to avoid manual corruptions).</li>
+</ul>
+<h3 id="first-steps-in-nlp-not-language-modeling-yet-1">First steps in NLP (not language modeling yet)</h3>
+<ul>
+<li><strong>Gandhi et al. (2023): “Extending the Forward Forward Algorithm.”</strong><br>
+Replicates MNIST and extends FF to <strong>IMDb sentiment</strong> (classification), explicitly positioning it as an early step beyond vision.</li>
+</ul>
+<h2 id="has-anyone-trained-an-autoregressive-gpt-like-lm-with-ff-1">Has anyone trained an autoregressive GPT-like LM with FF?</h2>
+<p>I did not find a peer-reviewed result demonstrating a competitive <strong>causal/autoregressive transformer language model</strong> trained end-to-end with Hinton-style FF as the primary learning rule.</p>
+<p>What exists is:</p>
+<ul>
+<li>
+<p><strong>Hinton’s own attempted next-character prediction</strong> in an early draft that he later could not reproduce.</p>
+</li>
+<li>
+<p>Community discussion where people explicitly say they’re attempting “mini-GPT” with FF, and the referenced repos were “not working” / hard to find; one “forward_forward_gpt” repo is referenced but is no longer accessible at the linked location.</p>
+</li>
+<li>
+<p>NLP extensions that are <strong>classification</strong> (IMDb) rather than <strong>autoregressive generation</strong>.</p>
+</li>
+</ul>
+<h2 id="why-ff-gpt-hasnt-happened-the-concrete-blockers-1">Why “FF GPT” hasn’t happened (the concrete blockers)</h2>
+<h3 id="1-the-label-space-is-enormous-vocab-and-ff-style-inferencetraining-can-be-label-iterative-1">1) The label space is enormous (vocab), and FF-style inference/training can be <em>label-iterative</em></h3>
+<p>Classical FF classification often evaluates “goodness” for each possible label and picks the max, which scales poorly when the label set is large.<br>
+For language modeling, the “label” is the next token (often 50k–200k). Doing multiple forward passes per candidate token is a non-starter without a redesign.</p>
+<h3 id="2-deep-layer-usefulnesscollaboration-is-already-fragile-in-ff-1">2) Deep-layer usefulness/collaboration is already fragile in FF</h3>
+<p>Layer Collaboration shows vanilla FF can have the pathological behavior where early layers dominate and deeper layers don’t help, because layers are “not aware” of later layers.<br>
+Transformers depend on depth; if deeper blocks don’t reliably add value, you won’t get GPT-like scaling.</p>
+<h3 id="3-negatives-are-easy-to-define-for-tokens-but-hard-to-make-informative-at-scale-1">3) Negatives are easy to define for tokens, but hard to make <em>informative</em> at scale</h3>
+<p>Random wrong-token negatives can be too easy; “hard negatives” require either:</p>
+<ul>
+<li>
+<p>a strong proposal model (which is usually trained with backprop), or</p>
+</li>
+<li>
+<p>additional machinery (self-contrastive schemes, learned generators, etc.).</p>
+</li>
+</ul>
+<h3 id="4-sequential-learning-instability-shows-up-early-1">4) Sequential learning instability shows up early</h3>
+<p>Hinton’s inability to replicate the character-prediction result suggests that even toy LM setups can be unstable depending on goodness, learning rates, scheduling of positive/negative phases, etc.</p>
+<h3 id="5-engineering-reality-the-best-nanogpt-style-codebases-are-backprop-first-1">5) Engineering reality: the best “nanoGPT-style” codebases are backprop-first</h3>
+<p>Useful for experimentation, but they won’t give you an FF LM “for free.” Examples like Transformer-Sandbox and cleanGPT are explicitly forks/research frameworks around nanoGPT-style training and architecture exploration, not FF training.</p>
+<h2 id="a-practical-design-to-train-an-autoregressive-generative-lm-with-ff-like-learning-1">A practical design to train an autoregressive generative LM with FF-like learning</h2>
+<p>If the goal is <strong>autoregressive generation</strong>, you must avoid “one forward pass per vocab item.”</p>
+<p>The key move is to treat FF “positive vs negative” as <strong>contrastive learning of (context, next-token)</strong> with <em>sampled negatives</em>, so your compute per token is O(K) negatives, not O(|V|).</p>
+<h3 id="core-formulation-conditional-energy-goodness-for-next-token-1">Core formulation: conditional energy / goodness for next token</h3>
+<p>For each position <em>t</em> in a sequence:</p>
+<ul>
+<li>
+<p>Context representation at layer i: hi,t=Blocki(detach(hi−1))h_{i,t} = \mathrm{Block}_i(\text{detach}(h_{i-1}))hi,t​=Blocki​(detach(hi−1​))</p>
+</li>
+<li>
+<p>Token embedding table: E[w]E[w]E[w]</p>
+</li>
+</ul>
+<p>Define a <strong>goodness</strong> for the correct next token w+=xt+1w^+=x_{t+1}w+=xt+1​ and sampled negatives wk−∼q(⋅)w^-_k\sim q(\cdot)wk−​∼q(⋅):</p>
+<ul>
+<li>
+<p>Simple and scalable goodness:</p>
+<p>gi(hi,t,w)=⟨LN(hi,t),LN(E[w])⟩g_i(h_{i,t}, w) = \langle \mathrm{LN}(h_{i,t}), \mathrm{LN}(E[w])\ranglegi​(hi,t​,w)=⟨LN(hi,t​),LN(E[w])⟩</p>
+<p>(dot-product similarity; you can also use cosine)</p>
+</li>
+</ul>
+<p>Train each layer i with a local NCE/logistic loss:</p>
+<ul>
+<li>
+<p>Increase gi(⋅,w+)g_i(\cdot, w^+)gi​(⋅,w+)</p>
+</li>
+<li>
+<p>Decrease gi(⋅,wk−)g_i(\cdot, w^-_k)gi​(⋅,wk−​)</p>
+</li>
+</ul>
+<p>This is “FF-like” because it’s <strong>purely forward signals + local discrimination between positives/negatives</strong>, matching FF’s stated link to contrastive learning/NCE ideas.</p>
+<h3 id="how-to-keep-it-ff-no-cross-layer-backprop-1">How to keep it FF (no cross-layer backprop)</h3>
+<p>For each transformer block i, you:</p>
+<ol>
+<li>
+<p>Compute its output using <strong>detached</strong> input states (stop-grad boundary).</p>
+</li>
+<li>
+<p>Compute its local contrastive loss using its output only.</p>
+</li>
+<li>
+<p>Backprop <strong>only within the block</strong> to update its parameters.</p>
+</li>
+</ol>
+<p>This matches the “train each layer locally” spirit.</p>
+<h3 id="how-to-preserve-global-characteristics-avoid-layer-collapse-1">How to preserve <em>global characteristics</em> (avoid “layer collapse”)</h3>
+<p>Use <strong>Collaborative Forward-Forward</strong> ideas:</p>
+<ul>
+<li>
+<p>When updating layer i, include a <strong>global goodness offset</strong> computed from other layers’ goodness but treated as constant (stop-grad / frozen copy).</p>
+</li>
+<li>
+<p>Operationally, you maintain a “shadow” copy f^\hat ff^​ of other layers used only to compute the offset γ\gammaγ, without taking gradients through it.</p>
+</li>
+</ul>
+<p>This is a direct mechanism to make early layers “care” about downstream behavior without end-to-end backprop.</p>
+<h3 id="goodness-choice-and-normalization-important-in-deep-nets-1">Goodness choice and normalization (important in deep nets)</h3>
+<p>Vanilla FF’s squared-norm goodness can create scaling/dead-unit issues; DeeperForward specifically argues for:</p>
+<ul>
+<li>
+<p><strong>layer normalization</strong> for feature scaling</p>
+</li>
+<li>
+<p><strong>mean goodness</strong> to decouple representation from the goodness scalar and avoid dead-neuron update problems</p>
+</li>
+</ul>
+<p>For transformers (already LN-heavy), the takeaway is:</p>
+<ul>
+<li>
+<p>Your goodness should not be trivially encoded in magnitude that later layers can exploit.</p>
+</li>
+<li>
+<p>If you rely on magnitude-based goodness, ensure LN placement truly removes it (and doesn’t leak it through residual pathways).</p>
+</li>
+</ul>
+<p>DeeperForward also highlights that residual structures help integrate features across levels in FF-style deep training.<br>
+For transformers, that suggests being very deliberate about where goodness is measured (pre/post residual, pre/post LN).</p>
+<h3 id="negative-sampling-strategies-that-actually-work-for-lms-1">Negative sampling strategies that actually work for LMs</h3>
+<p>You need negatives that are <em>not</em> trivially separable.</p>
+<p>A workable progression:</p>
+<ol>
+<li>
+<p><strong>Unigram noise</strong> negatives (word2vec-style) for a first working baseline.</p>
+</li>
+<li>
+<p>Move to <strong>in-batch negatives</strong> (other targets in the batch).</p>
+</li>
+<li>
+<p>Add <strong>proposal-based hard negatives</strong>: sample from a cheap auxiliary head (could be shallow, even trained with standard methods) and use top-k as negatives.<br>
+This keeps training O(K) while making negatives informative.</p>
+</li>
+</ol>
+<h3 id="inference-how-do-you-actually-generate-text-1">Inference: how do you actually generate text?</h3>
+<p>Once you train a final-layer representation hL,th_{L,t}hL,t​, you can produce logits by:</p>
+<p>ℓ[w]=⟨hL,t,E[w]⟩\ell[w] = \langle h_{L,t}, E[w]\rangleℓ[w]=⟨hL,t​,E[w]⟩</p>
+<p>and sample via softmax like a standard LM.</p>
+<p>If you also want FF’s “global goodness” to matter at inference:</p>
+<ul>
+<li>
+<p>Use <strong>two-stage decoding</strong>:</p>
+<ol>
+<li>
+<p>propose top-k tokens by dot-product logits</p>
+</li>
+<li>
+<p>re-rank with a more expensive “global goodness” score that includes multiple layers<br>
+This avoids O(|V|) FF scoring.</p>
+</li>
+</ol>
+</li>
+</ul>
+<h2 id="recommended-experimental-path-nanogpt-scale-but-ff-style-1">Recommended experimental path (nanoGPT-scale, but FF-style)</h2>
+<h3 id="phase-0-prove-the-mechanics-on-tiny-char-level-lm-1">Phase 0: prove the mechanics on tiny char-level LM</h3>
+<ul>
+<li>
+<p>Dataset: Tiny Shakespeare (char-level)</p>
+</li>
+<li>
+<p>Model: 2–4 transformer blocks, very small d_model</p>
+</li>
+<li>
+<p>Objective: local contrastive next-char (K negatives)</p>
+</li>
+<li>
+<p>Metric: bits-per-character</p>
+</li>
+</ul>
+<p>This aligns with Hinton’s own reported-but-not-reproduced direction (next-character prediction).</p>
+<h3 id="phase-1-fix-deep-layer-collapse-early-1">Phase 1: fix deep-layer collapse early</h3>
+<p>Add layer-collaboration offset γ\gammaγ (frozen-copy style) and compare:</p>
+<ul>
+<li>vanilla per-layer loss vs collaborative loss</li>
+</ul>
+<h3 id="phase-2-stabilize-deep-training-1">Phase 2: stabilize deep training</h3>
+<p>Adopt the “goodness design + normalization” lessons from DeeperForward:</p>
+<ul>
+<li>
+<p>treat goodness in a way that doesn’t break scaling across layers</p>
+</li>
+<li>
+<p>ensure LN placement prevents trivial “magnitude channel” solutions</p>
+</li>
+</ul>
+<h3 id="phase-3-move-to-subword-vocab-and-real-lm-1">Phase 3: move to subword vocab and real LM</h3>
+<ul>
+<li>
+<p>Switch tokenizer, larger vocab</p>
+</li>
+<li>
+<p>Use proposal-based negatives to keep compute manageable</p>
+</li>
+<li>
+<p>Evaluate perplexity and sample quality</p>
+</li>
+</ul>
+<h2 id="what-i-would-conclude-from-the-literature-in-one-sentence-1">What I would conclude from the literature, in one sentence</h2>
+<p>The literature strongly suggests you <strong>should not</strong> train a transformer LM with naive, strictly greedy FF; you likely need (i) <strong>collaboration/global-goodness tricks</strong> to prevent deep-layer uselessness, (ii) <strong>a scalable goodness definition/normalization scheme</strong> to keep deep learning stable, and (iii) an <strong>NCE-style sampled-negative formulation</strong> so “label iteration over vocab” is avoided.</p>
+<p>If you want, I can convert the above into a concrete block-by-block training pseudocode for a GPT-style transformer (including where to detach, what tensors the local loss uses, and how to structure the optimizer steps per block).</p>
+<h2 id="user-12">User</h2>
+<p>should we be tweaking FF to measure goodness at a distribution of logits level? instead of a classifier. or is that the same as an already existing different approach</p>
+<h2 id="assistant-14">Assistant</h2>
+<p>Thought for 8m 25s</p>
+<h2 id="assistant-15">Assistant</h2>
+<p>In an autoregressive LM, “a classifier” and “a distribution over logits” are basically the same object: at each position you are doing <strong>multiclass classification over the vocabulary</strong>. The real question is which <em>training objective</em> you attach to those logits and whether you keep the <strong>FF constraint</strong> (purely local learning, no end-to-end gradient flow).</p>
+<p>There are two distinct interpretations of what you’re proposing.</p>
+<h2 id="1-full-distribution-level-goodness-cross-entropy-kl-on-logits-1">1) Full distribution-level goodness (cross-entropy / KL on logits)</h2>
+<p>If by “goodness at a distribution level” you mean something like:</p>
+<ul>
+<li>
+<p><strong>Goodness</strong> g=−CE(softmax(ℓ),y)g = -\mathrm{CE}(\text{softmax}(\ell), y)g=−CE(softmax(ℓ),y), or</p>
+</li>
+<li>
+<p><strong>Goodness</strong> g=−KL(ptarget ∥ softmax(ℓ))g = -\mathrm{KL}(p_\text{target}\,\|\,\text{softmax}(\ell))g=−KL(ptarget​∥softmax(ℓ))</p>
+</li>
+</ul>
+<p>then you’re just using a <strong>proper scoring rule</strong> on the predicted distribution.</p>
+<p>That is not uniquely “Forward–Forward”; it’s essentially:</p>
+<ul>
+<li>
+<p><strong>Deep supervision / auxiliary heads</strong> (losses applied at intermediate layers), e.g. Deeply-Supervised Nets.</p>
+</li>
+<li>
+<p>Or, if you <em>stop gradients between blocks and train each block with its own local head</em>, it falls under <strong>local-learning / local error signals</strong> and related decoupled training families (local classifiers per layer, no global backprop to earlier layers).</p>
+</li>
+<li>
+<p>Closely adjacent to “decoupled greedy learning” style decompositions (again: module-local objectives rather than one global one).</p>
+</li>
+</ul>
+<p>So: <strong>yes</strong>, “distribution-level goodness” largely collapses into an already-existing approach family (deep supervision / local losses). The novelty would be your <em>specific way of enforcing locality, collaboration, and negative construction</em>, not the fact you’re scoring distributions.</p>
+<p>Practical blocker: full softmax CE requires summing over ∣V∣|V|∣V∣, which is expensive for big vocabs. Classic LM work uses sampling/importance approximations to avoid full normalization.</p>
+<h2 id="2-ff-style-goodness-on-token-candidates-nce-negative-sampling-sampled-softmax-1">2) FF-style goodness on <em>token candidates</em> (NCE / negative sampling / sampled softmax)</h2>
+<p>If instead you mean: “Don’t treat it as binary ‘is this input real?’; treat goodness as the <strong>logit/energy score</strong> of (context, candidate next token) and learn by contrasting true vs false tokens,” then you’re squarely in the territory FF already points toward.</p>
+<p>Hinton explicitly frames FF as inspired by <strong>Noise-Contrastive Estimation (NCE)</strong>.<br>
+NCE itself is: train by <strong>logistic regression discriminating data from noise</strong>, rather than computing a full normalized likelihood.</p>
+<p>For an LM at position ttt:</p>
+<ul>
+<li>
+<p>context representation: hth_tht​ (from some layer/block)</p>
+</li>
+<li>
+<p>token embedding: E[w]E[w]E[w]</p>
+</li>
+<li>
+<p>score/logit (“goodness” per token): s(w)=⟨ht,E[w]⟩s(w)=\langle h_t, E[w]\rangles(w)=⟨ht​,E[w]⟩</p>
+</li>
+</ul>
+<p>Then train with:</p>
+<ul>
+<li>
+<p>positive token w+=xt+1w^+=x_{t+1}w+=xt+1​</p>
+</li>
+<li>
+<p>negatives w1−,…,wK−∼q(⋅)w^-_1,\dots,w^-_K \sim q(\cdot)w1−​,…,wK−​∼q(⋅)</p>
+</li>
+</ul>
+<p>A standard NCE/negative-sampling objective is:</p>
+<p>L=−log⁡σ(s(w+))−∑k=1Klog⁡σ(−s(wk−))\mathcal{L} = -\log \sigma(s(w^+)) - \sum_{k=1}^K \log \sigma(-s(w^-_k))L=−logσ(s(w+))−k=1∑K​logσ(−s(wk−​))</p>
+<p>This is the same basic shape as widely used negative-sampling objectives in NLP.</p>
+<p>This variant is much more “FF-like” because:</p>
+<ul>
+<li>
+<p>it’s still <strong>positive vs negative</strong></p>
+</li>
+<li>
+<p>you can implement it with <strong>two forward evaluations per sample</strong> (or one forward for the context + multiple candidate dot-products)</p>
+</li>
+<li>
+<p>you avoid the ∣V∣|V|∣V∣ softmax</p>
+</li>
+</ul>
+<p>If you want the <em>distribution</em> eventually for generation, you can still decode with a softmax over logits at inference; the training objective just avoids full normalization.</p>
+<h2 id="which-one-should-you-do-for-an-autoregressive-ff-like-lm-1">Which one should you do for an autoregressive FF-like LM?</h2>
+<p>If the goal is “FF or something very similar” <strong>and</strong> “scales to large vocab,” the more natural move is:</p>
+<ul>
+<li>Use <strong>candidate-level goodness</strong> (token energy/logit) + <strong>sampled negatives</strong> (NCE/negative sampling / sampled softmax family).</li>
+</ul>
+<p>If you instead do full-distribution CE/KL at each layer:</p>
+<ul>
+<li>
+<p>you are effectively doing <strong>local losses / deep supervision</strong>, not classic FF.</p>
+</li>
+<li>
+<p>it’s viable, but the “FF-ness” is mostly in your <strong>gradient stopping between blocks</strong> and your <strong>module-local objectives</strong>, not in the loss form itself.</p>
+</li>
+</ul>
+<h2 id="the-important-nuance-for-why-this-isnt-just-a-classifier-1">The important nuance for “why this isn’t just ‘a classifier’”</h2>
+<p>A next-token softmax head <em>is</em> a classifier. The distinction is:</p>
+<ul>
+<li>
+<p>FF classification (original) often relies on <strong>evaluating goodness per label</strong> by “clamping” the label and comparing goodness across labels. That is infeasible for vocab-size labels.</p>
+</li>
+<li>
+<p>Switching to logits/energies with <strong>sampling</strong> is how language modeling has historically avoided the “evaluate every label” trap.</p>
+</li>
+</ul>
+<h2 id="bottom-line-1">Bottom line</h2>
+<ul>
+<li>
+<p><strong>Distribution-level goodness</strong> = you’re mostly rediscovering <strong>cross-entropy / KL</strong> plus <strong>deep supervision / local losses</strong>.</p>
+</li>
+<li>
+<p><strong>Candidate-logit goodness with negatives</strong> = you’re mostly rediscovering <strong>NCE / negative sampling / sampled-softmax-style</strong> training, which is already tightly aligned with FF’s “positive vs negative” roots.</p>
+</li>
+</ul>
+<p>What could be genuinely new is not “goodness on logits,” but:</p>
+<ul>
+<li>
+<p>enforcing <strong>strict block-local updates</strong> in a transformer (stop-grad boundaries),</p>
+</li>
+<li>
+<p>adding <strong>inter-layer collaboration signals</strong> without end-to-end backprop,</p>
+</li>
+<li>
+<p>and designing <strong>hard negatives/proposals</strong> that make the model learn global sequence constraints rather than local token heuristics.</p>
+</li>
+</ul>
+<p>If you want, I can give a concrete “FF-like GPT training objective” that is (a) token-energy NCE, (b) block-local, (c) compatible with tied embeddings, and (d) uses a proposal mechanism for hard negatives so it doesn’t collapse into unigram discrimination.</p>
+<h2 id="user-13">User</h2>
+<p>so for hard negatives, Hinton tried using the model's own predictions and that didn't work? or we're not sure</p>
+<h2 id="assistant-16">Assistant</h2>
+<p>Thought for 7m 45s</p>
+<h2 id="assistant-17">Assistant</h2>
+<p>Hinton did propose (and in one draft explicitly <em>demonstrated</em>) using the model’s own predictions to generate negatives for a toy next-character task — but in the later “final” PDF he says he could not reproduce the key result and suspects it was a bug. So it’s not a clean “it didn’t work”; it’s “he reported it working, then later wasn’t sure / couldn’t replicate.”</p>
+<p>What the paper(s) say, precisely:</p>
+<ul>
+<li>
+<p>In the core FF setup he explicitly allows negatives to be <strong>predicted by the net itself</strong> (via top‑down connections) or supplied externally.</p>
+</li>
+<li>
+<p>In an earlier version of the paper (the one that includes a full “predict the next character” section), he describes constructing negatives by taking a real 10‑character context and replacing the last character with <strong>a prediction from the model</strong> (“teacher forcing” style). He also describes generating <strong>entire negative sequences</strong> from the predictive model starting from an initial real context, and says this worked “very nearly as well” as teacher forcing.</p>
+</li>
+<li>
+<p>In the later “FFXfinal” PDF, he revisits that as a “sleep/offline negatives” motivation and says: he previously reported doing many positive updates followed by many negative updates <strong>generated by the net itself</strong> with little loss, but he has been <strong>unable to replicate</strong> and suspects a <strong>bug</strong>. He adds that, with squared-activity goodness, separating positive/negative phases seems to require very low learning rate and extremely high momentum, and that maybe a different goodness function could make phase separation work (open question).</p>
+</li>
+</ul>
+<p>So the most accurate summary is:</p>
+<ul>
+<li>
+<p><strong>Yes</strong>, he tried (in a toy sequence setting) using model-generated predictions as negatives.</p>
+</li>
+<li>
+<p><strong>He initially reported it worked</strong>, including the idea that negatives could be generated “offline/sleep.”</p>
+</li>
+<li>
+<p><strong>Later he could not replicate the result and suspected a bug</strong>, so we don’t have a reliable, reproduced claim that this works as stated.</p>
+</li>
+</ul>
+<p>Also note: his “couldn’t replicate” comment in the final version is tied to <em>separating positive and negative phases into large blocks of updates</em> (wake/sleep style), not necessarily to the basic idea “use model predictions as hard negatives” in an online interleaved way.</p>
+<h2 id="user-14">User</h2>
+<p>did he share code for that? low learning and high momentum may be ok, or we could play with diff goodness funcs or global sync like we discussed (unless he was already doing that)</p>
+<h2 id="assistant-18">Assistant</h2>
+<p>Thought for 12m 19s</p>
+<h2 id="assistant-19">Assistant</h2>
+<h3 id="did-hinton-share-code-for-the-sequence-sleep-phase-hard-negative-experiment-1">Did Hinton share code for the sequence / “sleep-phase” hard-negative experiment?</h3>
+<p>Not that I can find.</p>
+<p>What he <em>did</em> share publicly is:</p>
+<ul>
+<li><strong><code>ffcode.zip</code> (Matlab)</strong>: “matlab code for the supervised version of FF with the first 10 pixels being the labels,” linked from his homepage, plus a short <strong>README.txt</strong> describing how to run it on MNIST.</li>
+</ul>
+<p>That release is for the <strong>supervised MNIST setup</strong> (labels embedded into the input), not the <strong>next-character prediction / offline negative generation</strong> experiment.</p>
+<p>In the final paper, he explicitly says the next-character “sleep-phase” result he reported in an early draft was <strong>not reproducible</strong> and he suspects it was due to a <strong>bug</strong>.<br>
+Given that, it’s unsurprising there’s no “official” code drop for the sequence case.</p>
+<h3 id="what-exactly-was-the-low-learning-rate-high-momentum-about-1">What exactly was the “low learning rate / high momentum” about?</h3>
+<p>It’s specifically about <strong>separating positive and negative learning into long blocks</strong>, i.e.:</p>
+<ul>
+<li>
+<p>“thousands of weight updates on positive data”<br>
+followed by</p>
+</li>
+<li>
+<p>“thousands on negative data” (generated by the net)</p>
+</li>
+</ul>
+<p>He says that with <strong>sum-of-squared-activities goodness</strong>, that long-block alternation “only works if the learning rate is very low and the momentum is extremely high,” and that a different goodness function <em>might</em> allow phase separation.</p>
+<p>So two important implications:</p>
+<ol>
+<li>
+<p>That warning is about the <strong>wake/sleep separation regime</strong>, not necessarily about <strong>interleaving pos/neg within each minibatch/step</strong> (which is closer to standard contrastive/NCE practice).</p>
+</li>
+<li>
+<p>It’s also tied to that specific goodness choice (squared activity), and he explicitly flags “different goodness function” as the likely lever.</p>
+</li>
+</ol>
+<h3 id="was-he-already-doing-global-sync-like-we-discussed-1">Was he “already doing global sync” like we discussed?</h3>
+<p>Depends what you mean by “global sync.”</p>
+<p><strong>He <em>was</em> doing synchronous updates of hidden states in a recurrent/iterative version of FF</strong> (his “treat a static image as a boring video” idea). He reports that synchronous updates of <em>all hidden layers</em> with damping actually learned slightly better than alternating layer updates.</p>
+<p>That is “global synchronization” in the sense of <strong>global, simultaneous state updates during iterative inference</strong>.</p>
+<p>But <strong>he was not doing “global synchronization” of learning via a cross-layer coordination term in the loss</strong> (the kind of “layer collaboration / global goodness injection” we discussed earlier). In the FF paper(s), the main coordination mechanism is architectural/iterative (the recurrent framing), not an explicit multi-layer coupling term in the objective.</p>
+<h3 id="did-he-already-use-model-based-hard-negatives-1">Did he already use “model-based hard negatives”?</h3>
+<p>Yes, in two different senses (but with caveats):</p>
+<ol>
+<li>
+<p><strong>Sequence draft (FFA13)</strong>: he describes negatives where the last character in a window is replaced by <strong>a prediction from the previous 10 chars</strong> (“teacher forcing”), and also negatives <strong>entirely generated by the predictive model</strong> starting from the initial real context, which he says worked nearly as well <em>in that draft</em>.</p>
+</li>
+<li>
+<p><strong>Final paper (FFXfinal)</strong>: he later says he could not replicate the sleep-phase block-alternation result and suspects a bug; plus it only worked under extreme optimizer settings with squared-activity goodness.</p>
+</li>
+</ol>
+<p>Also, in the recurrent MNIST setup he generates “harder” negatives by sampling <strong>incorrect labels in proportion to the model’s predicted probabilities</strong> (instead of uniform wrong labels), explicitly noting it makes training more efficient.</p>
+<h3 id="practical-takeaways-for-your-direction-1">Practical takeaways for your direction</h3>
+<ul>
+<li>
+<p><strong>Low LR + very high momentum</strong> is plausibly “OK” <em>if</em> you really want the long wake/sleep separation, but Hinton’s final writeup strongly suggests that regime is currently brittle and goodness-dependent.</p>
+</li>
+<li>
+<p>A more robust path is usually: <strong>don’t separate phases into long blocks</strong>; instead <strong>interleave pos/neg every step</strong> (or every minibatch) so you’re not relying on momentum to average two opposing objectives.</p>
+</li>
+<li>
+<p>Exploring <strong>different goodness functions</strong> is explicitly endorsed by Hinton as the likely way to make separation feasible.</p>
+</li>
+<li>
+<p>If you want “global coherence” without backprop, Hinton’s paper gives one mechanism (iterative/recurrent inference with synchronous updates) , while later work (not Hinton’s) gives another mechanism (explicit layer-collaboration terms).</p>
+</li>
+</ul>
+<p>If you want, I can propose 2–3 concrete “goodness” definitions for an autoregressive LM that (a) avoid vocab-wide scoring per step and (b) are compatible with either interleaved pos/neg or a stabilized wake/sleep separation.</p>
+<h2 id="user-15">User</h2>
+<p>yes</p>
+<h2 id="assistant-20">Assistant</h2>
+<p>Thought for 9m 32s</p>
+<h2 id="assistant-21">Assistant</h2>
+<p>Below are three concrete “goodness” definitions for an autoregressive LM that (a) never require scoring the full vocabulary and (b) can be implemented in an FF‑like, block‑local way (detach between blocks). I’ll also include how each interacts with “hard negatives,” and how to add the global synchronization term we discussed without turning it into end‑to‑end backprop.</p>
+<p>I’ll use this notation:</p>
+<ul>
+<li>
+<p>Tokens: x1,…,xTx_1,\dots,x_Tx1​,…,xT​. Target at position ttt: yt=xt+1y_t = x_{t+1}yt​=xt+1​.</p>
+</li>
+<li>
+<p>Transformer blocks l=1..Ll=1..Ll=1..L. Block output hidden state at position ttt: hl,t∈Rdh_{l,t}\in\mathbb{R}^dhl,t​∈Rd.</p>
+</li>
+<li>
+<p>Token embedding matrix E∈R∣V∣×dE\in\mathbb{R}^{|V|\times d}E∈R∣V∣×d (often tied to output).</p>
+</li>
+<li>
+<p>Candidate set at position ttt: Ct={yt}∪{wt,1−,…,wt,K−}C_t = \{y_t\}\cup\{w^-_{t,1},\dots,w^-_{t,K}\}Ct​={yt​}∪{wt,1−​,…,wt,K−​} with small KKK (e.g. 16–256).</p>
+</li>
+<li>
+<p>“Score” (logit/energy) from layer lll: sl,t(w)s_{l,t}(w)sl,t​(w). You compute this only for w∈Ctw\in C_tw∈Ct​ via embedding gathers.</p>
+</li>
+</ul>
+<p>A standard choice that avoids scale hacks:</p>
+<p>sl,t(w)=⟨LN(hl,t), LN(E[w])⟩τs_{l,t}(w) = \frac{\langle \mathrm{LN}(h_{l,t}),\, \mathrm{LN}(E[w])\rangle}{\tau}sl,t​(w)=τ⟨LN(hl,t​),LN(E[w])⟩​</p>
+<p>(or sl,t(w)=E[w]⊤LN(hl,t)s_{l,t}(w)= E[w]^\top \mathrm{LN}(h_{l,t})sl,t​(w)=E[w]⊤LN(hl,t​) if you don’t want LN on embeddings).</p>
+<hr>
+<h2 id="goodness-1-pairwise-margin-energy-wins-no-softmax-very-fflike-1">Goodness 1: Pairwise margin “energy wins” (no softmax, very FF‑like)</h2>
+<p><strong>Goodness idea:</strong> the correct token should score higher than negatives by a margin. This is the most direct FF analogue: “positive &gt; negative” locally.</p>
+<p>For each negative w−∈Ct∖{yt}w^- \in C_t\setminus\{y_t\}w−∈Ct​∖{yt​}, define pairwise margin:</p>
+<p>Δl,t(w−)=sl,t(yt)−sl,t(w−)\Delta_{l,t}(w^-) = s_{l,t}(y_t) - s_{l,t}(w^-)Δl,t​(w−)=sl,t​(yt​)−sl,t​(w−)</p>
+<p>Layer‑local loss (smooth hinge / logistic margin):</p>
+<p>Ll,t(1)=∑w−softplus(m−Δl,t(w−))\mathcal{L}^{(1)}_{l,t} = \sum_{w^-} \mathrm{softplus}(m - \Delta_{l,t}(w^-))Ll,t(1)​=w−∑​softplus(m−Δl,t​(w−))</p>
+<ul>
+<li>mmm is a margin (often depth‑scheduled: smaller for early blocks, larger for later blocks).</li>
+</ul>
+<p><strong>Why it’s attractive</strong></p>
+<ul>
+<li>
+<p>No normalization, no full distribution.</p>
+</li>
+<li>
+<p>Directly matches “goodness should separate positives and negatives.”</p>
+</li>
+<li>
+<p>Stable with small candidate sets.</p>
+</li>
+</ul>
+<p><strong>Hard negatives</strong></p>
+<ul>
+<li>
+<p>This objective benefits strongly from <em>hard</em> negatives because easy negatives saturate.</p>
+</li>
+<li>
+<p>Good default: for each position ttt, pick negatives as a mixture:</p>
+<ul>
+<li>
+<p>top‑k1k_1k1​ tokens from a proposal distribution (see below)</p>
+</li>
+<li>
+<ul>
+<li>k2k_2k2​ in‑batch other targets (other yt′y_{t'}yt′​ in the batch)</li>
+</ul>
+</li>
+<li>
+<ul>
+<li>k3k_3k3​ random/unigram tokens for diversity<br>
+(so you don’t overfit to one proposal mechanism)</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p><strong>Wake/sleep compatibility</strong></p>
+<ul>
+<li>
+<p>Works fine interleaved (pos/neg in same step).</p>
+</li>
+<li>
+<p>Also compatible with “sleep”: negatives can be model‑generated continuations; you then compare correct token(s) vs tokens that the sleep generator proposes (or appears in a negative continuation).</p>
+</li>
+</ul>
+<hr>
+<h2 id="goodness-2-candidateset-softmax-crossentropy-distributionlevel-but-cheap-1">Goodness 2: Candidate‑set softmax cross‑entropy (distribution‑level, but cheap)</h2>
+<p>This is the cleanest way to do “distribution‑level goodness” without ∣V∣|V|∣V∣.</p>
+<p>Define a restricted softmax over the candidate set CtC_tCt​:</p>
+<p>pl,t(w∣Ct)=exp⁡(sl,t(w))∑u∈Ctexp⁡(sl,t(u))p_{l,t}(w\mid C_t) = \frac{\exp(s_{l,t}(w))}{\sum_{u\in C_t}\exp(s_{l,t}(u))}pl,t​(w∣Ct​)=∑u∈Ct​​exp(sl,t​(u))exp(sl,t​(w))​</p>
+<p>Local loss:</p>
+<p>Ll,t(2)=−log⁡pl,t(yt∣Ct)\mathcal{L}^{(2)}_{l,t} = -\log p_{l,t}(y_t\mid C_t)Ll,t(2)​=−logpl,t​(yt​∣Ct​)</p>
+<p>You can define “goodness” as gl,t=−Ll,t(2)g_{l,t}=-\mathcal{L}^{(2)}_{l,t}gl,t​=−Ll,t(2)​ if you want to keep FF language.</p>
+<p><strong>What this is (and isn’t)</strong></p>
+<ul>
+<li>
+<p>It is “classifier-like,” but only over K+1K+1K+1 candidates, not the full vocab.</p>
+</li>
+<li>
+<p>It’s effectively sampled-softmax / contrastive CE. The novelty is not CE itself; it’s using it as a <strong>strictly local objective per block</strong> with detach boundaries, plus your negative strategy and layer collaboration.</p>
+</li>
+</ul>
+<p><strong>Hard negatives</strong></p>
+<ul>
+<li>
+<p>Same mixture strategy as above.</p>
+</li>
+<li>
+<p>This objective is somewhat more forgiving than pairwise margin if some negatives are easy (because normalization still shapes gradients).</p>
+</li>
+</ul>
+<p><strong>Wake/sleep compatibility</strong></p>
+<ul>
+<li>
+<p>Interleaved training works well.</p>
+</li>
+<li>
+<p>For “sleep,” you can populate CtC_tCt​ using top‑kkk from the sleep generator at that position (plus extras).</p>
+</li>
+</ul>
+<p><strong>Optional correction</strong></p>
+<ul>
+<li>If you care about unbiased likelihood estimation, you can add importance corrections based on the negative sampling distribution q(w)q(w)q(w). Practically, many systems just treat it as a contrastive objective and rely on good negatives.</li>
+</ul>
+<hr>
+<h2 id="goodness-3-sequencecontinuation-goodness-global-coherence-beyond-one-token-1">Goodness 3: Sequence/continuation goodness (global coherence beyond one token)</h2>
+<p>Token‑level training can still yield locally good but globally incoherent behavior. A direct way to encode “global characteristics” is to define goodness over a <em>short continuation</em> window.</p>
+<p>Pick a short horizon HHH (e.g. 8–64 tokens). For each start position ttt, define the continuation:</p>
+<ul>
+<li>
+<p>Positive continuation: Yt+=(xt+1,…,xt+H)Y^+_{t} = (x_{t+1},\dots,x_{t+H})Yt+​=(xt+1​,…,xt+H​)</p>
+</li>
+<li>
+<p>Negative continuation: Yt−Y^-_{t}Yt−​ created by:</p>
+<ul>
+<li>
+<p>model-generated continuation (“sleep”)</p>
+</li>
+<li>
+<p>or splice/swap/shuffle spans to break global structure while keeping local plausibility</p>
+</li>
+</ul>
+</li>
+</ul>
+<p>Define layer‑wise continuation score:</p>
+<p>Gl(t,Y)=∑j=1Hsl,t+j−1(Y[j])G_l(t, Y) = \sum_{j=1}^{H} s_{l,t+j-1}\big(Y[j]\big)Gl​(t,Y)=j=1∑H​sl,t+j−1​(Y[j])</p>
+<p>(where sl,ts_{l,t}sl,t​ is still computed cheaply using embedding gathers; for negatives you only need to score the actual negative tokens present in Y−Y^-Y−, not the whole vocab.)</p>
+<p>Now do a contrastive “positive continuation beats negative continuation” loss:</p>
+<p>Ll,t(3)=softplus(m−(Gl(t,Yt+)−Gl(t,Yt−)))\mathcal{L}^{(3)}_{l,t} = \mathrm{softplus}\big(m - (G_l(t,Y^+_t) - G_l(t,Y^-_t))\big)Ll,t(3)​=softplus(m−(Gl​(t,Yt+​)−Gl​(t,Yt−​)))</p>
+<p>Optionally with multiple negatives per ttt.</p>
+<p><strong>Why it’s attractive</strong></p>
+<ul>
+<li>
+<p>Forces multi-token, cross-time constraints.</p>
+</li>
+<li>
+<p>Makes “sleep-phase” style negatives conceptually natural: the model generates coherent-looking continuations that are still wrong relative to the data’s continuation.</p>
+</li>
+</ul>
+<p><strong>Hard negatives</strong></p>
+<ul>
+<li>
+<p>Model-generated continuations are naturally hard (especially if generated from a stronger proposal head or a deeper layer).</p>
+</li>
+<li>
+<p>You can mix in “structural” negatives (span swap, entity swap) to explicitly target global consistency failures.</p>
+</li>
+</ul>
+<p><strong>Wake/sleep compatibility</strong></p>
+<ul>
+<li>This is the most directly compatible with wake/sleep: wake uses real continuations; sleep generates negative continuations.</li>
+</ul>
+<hr>
+<h2 id="how-to-implement-these-in-a-block-local-ff-like-transformer-1">How to implement these in a block-local FF-like Transformer</h2>
+<p>A practical block-local training skeleton (for any of the above losses):</p>
+<ol>
+<li>
+<p>Run embeddings once to get h0,:h_{0,:}h0,:​.</p>
+</li>
+<li>
+<p>For each block lll:</p>
+<ul>
+<li>
+<p>Feed <strong>detached</strong> input to the block: hl,:=Blockl(stopgrad(hl−1,:))h_{l,:} = \mathrm{Block}_l(\mathrm{stopgrad}(h_{l-1,:}))hl,:​=Blockl​(stopgrad(hl−1,:​))</p>
+</li>
+<li>
+<p>Compute the block’s local loss ∑tLl,t\sum_t \mathcal{L}_{l,t}∑t​Ll,t​ using hl,th_{l,t}hl,t​ only.</p>
+</li>
+</ul>
+</li>
+<li>
+<p>Sum losses across blocks (or step each block separately).</p>
+</li>
+<li>
+<p>Backward once; because inputs were detached, gradients stay inside each block.</p>
+</li>
+</ol>
+<p>Key point: candidate scoring never needs full vocab; it’s gather dot-products against E[w]E[w]E[w] for w∈Ctw\in C_tw∈Ct​.</p>
+<hr>
+<h2 id="proposal-mechanism-for-hard-negatives-critical-1">Proposal mechanism for hard negatives (critical)</h2>
+<p>Hard negatives are easiest if you have a <em>proposal distribution</em> πt(w)\pi_t(w)πt​(w) that’s already somewhat aligned with the task.</p>
+<p>Three practical proposals (in increasing “FF purity risk”):</p>
+<ol>
+<li>
+<p><strong>Final-layer proposal, stop-grad</strong><br>
+Use the current model’s <em>top-layer</em> logits to select top‑kkk tokens for each ttt, but treat those selections and scores as stop-grad when training lower blocks.</p>
+<ul>
+<li>
+<p>Cheap, very effective.</p>
+</li>
+<li>
+<p>Risk: if the final layer is bad early, negatives are not hard.</p>
+</li>
+</ul>
+</li>
+<li>
+<p><strong>Deeper-layer proposal for shallower blocks</strong><br>
+When training block lll, sample negatives from block l+ql+ql+q (with stop-grad). This encourages a coarse-to-fine hierarchy.</p>
+<ul>
+<li>Helps keep deeper layers relevant.</li>
+</ul>
+</li>
+<li>
+<p><strong>External lightweight proposal (frozen or separately trained)</strong><br>
+E.g., a small n‑gram, a tiny backprop LM, or even a cached KNN proposal. This breaks circularity in early training.</p>
+<ul>
+<li>“Less pure,” but often necessary for bootstrapping.</li>
+</ul>
+</li>
+</ol>
+<p>In all cases: mix proposal negatives with in-batch and random for diversity.</p>
+<hr>
+<h2 id="add-global-sync-without-end-to-end-backprop-1">Add “global sync” without end-to-end backprop</h2>
+<p>Two low-cost “global coordination” add-ons that do not require full vocab:</p>
+<h3 id="a-cross-layer-distribution-alignment-on-candidate-sets-1">A) Cross-layer distribution alignment on candidate sets</h3>
+<p>Compute candidate-set distributions pl,t(⋅∣Ct)p_{l,t}(\cdot\mid C_t)pl,t​(⋅∣Ct​) and align them to a reference (typically the top layer) with stop-grad:</p>
+<p>Ll,tsync=KL(stopgrad(pL,t(⋅∣Ct)) ∥ pl,t(⋅∣Ct))\mathcal{L}^{sync}_{l,t} = \mathrm{KL}\left(\mathrm{stopgrad}\left(p_{L,t}(\cdot\mid C_t)\right)\ \|\ p_{l,t}(\cdot\mid C_t)\right)Ll,tsync​=KL(stopgrad(pL,t​(⋅∣Ct​)) ∥ pl,t​(⋅∣Ct​))</p>
+<ul>
+<li>
+<p>Only computed on CtC_tCt​, so it’s cheap.</p>
+</li>
+<li>
+<p>Encourages global agreement while each block still trains locally.</p>
+</li>
+</ul>
+<h3 id="b-global-goodness-offset-collaborative-scalar-1">B) Global goodness offset (“collaborative” scalar)</h3>
+<p>If you’re using a scalar continuation goodness GlG_lGl​ (Goodness 3) or even token-level goodness summaries, you can add a stop-grad global term:</p>
+<p>g~l=gl+α⋅stopgrad(∑r≠lgr)\tilde{g}_l = g_l + \alpha \cdot \mathrm{stopgrad}\Big(\sum_{r\neq l} g_r\Big)g~​l​=gl​+α⋅stopgrad(r=l∑​gr​)</p>
+<p>and train with g~l\tilde g_lg~​l​. This is the scalar version of “global coordination” and tends to reduce the “only early layers matter” failure mode.</p>
+<hr>
+<h2 id="recommendation-what-to-try-first-1">Recommendation: what to try first</h2>
+<p>If you want the fastest path to “works on nanoGPT-scale”:</p>
+<ol>
+<li><strong>Goodness 2 (candidate-set CE)</strong> + mixed hard negatives + detach boundaries</li>
+</ol>
+<ul>
+<li>It most closely matches standard LM training signals while avoiding full softmax.</li>
+</ul>
+<ol start="2">
+<li>Add <strong>sync KL on candidate sets</strong> (align intermediate blocks to top block with stop-grad)</li>
+</ol>
+<ul>
+<li>This is an inexpensive coordination mechanism.</li>
+</ul>
+<ol start="3">
+<li>Add <strong>Goodness 3 (continuation contrast)</strong> once token-level learning works</li>
+</ol>
+<ul>
+<li>This is the most direct lever for “global characteristics.”</li>
+</ul>
+<p>Then, if you still want wake/sleep separation:</p>
+<ul>
+<li>Try it <em>after</em> interleaved training is stable, and start with short sleep bursts (not thousands of steps) to avoid optimizer brittleness.</li>
+</ul>
+<hr>
+<h2 id="two-design-choices-you-should-decide-early-they-matter-1">Two design choices you should decide early (they matter)</h2>
+<ol>
+<li><strong>Do you tie embeddings across layers?</strong><br>
+If all layers share the same EEE, then every block is trying to shape the same token geometry. This can help alignment, but it can also create coupling. A compromise:</li>
+</ol>
+<ul>
+<li>tie EEE globally, but only allow some layers to update it (e.g., top layer + maybe one auxiliary).</li>
+</ul>
+<ol start="2">
+<li><strong>Depth scheduling (avoid “early block does everything”)</strong><br>
+To keep deep blocks relevant:</li>
+</ol>
+<ul>
+<li>
+<p>smaller margin / weaker objective early, stronger later</p>
+</li>
+<li>
+<p>or restrict early blocks to coarse targets (e.g., token clusters) and refine later</p>
+</li>
+</ul>
+<hr>
+<p>If you specify:</p>
+<ul>
+<li>
+<p>model size (e.g., nanoGPT 6-layer / d=384)</p>
+</li>
+<li>
+<p>vocab type (char vs BPE)</p>
+</li>
+<li>
+<p>and whether you want strict wake/sleep or interleaved training</p>
+</li>
+</ul>
+<p>I can translate the above into a concrete training loop with exact tensors, where to detach, candidate set construction, and a default set of hyperparameters (K, margins/temperatures, sync weights) that are usually stable.</p>
+
+        </div>
+        <footer class="footer">
+          Exported with <a href="https://github.com/Dicklesworthstone/chat_shared_conversation_to_file" target="_blank">csctf</a>
+        </footer>
+      </article>
+    </div>
+  </div>
+</body>
+</html>
