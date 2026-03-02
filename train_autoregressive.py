@@ -35,6 +35,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-train-max-samples", type=int, default=None)
     parser.add_argument("--eval-test-max-samples", type=int, default=None)
     parser.add_argument("--skip-goodness-eval", action="store_true")
+    parser.add_argument(
+        "--no-detach-output-embedding",
+        action="store_true",
+        help="Allow all block losses to backprop into shared token embeddings via output projection.",
+    )
+    parser.add_argument(
+        "--use-per-block-output-heads",
+        action="store_true",
+        help="Use learned per-block LM heads instead of shared embedding projection for candidate CE.",
+    )
+    parser.add_argument(
+        "--final-block-loss-weight",
+        type=float,
+        default=1.0,
+        help="Weight multiplier for final block candidate CE loss.",
+    )
+    parser.add_argument(
+        "--nonfinal-block-loss-weight",
+        type=float,
+        default=1.0,
+        help="Weight multiplier for non-final block candidate CE losses.",
+    )
     parser.add_argument("--split", type=str, default="mod5", choices=["mod5", "coverage", "random"])
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--test-size", type=int, default=20)
@@ -149,6 +171,10 @@ def main() -> None:
         eval_train_max_samples=args.eval_train_max_samples,
         eval_test_max_samples=args.eval_test_max_samples,
         enable_goodness_eval=not args.skip_goodness_eval,
+        output_embedding_detached=not args.no_detach_output_embedding,
+        use_per_block_output_heads=args.use_per_block_output_heads,
+        final_block_loss_weight=args.final_block_loss_weight,
+        nonfinal_block_loss_weight=args.nonfinal_block_loss_weight,
         device=args.device,
         seed=args.seed,
         run_tag=run_tag,

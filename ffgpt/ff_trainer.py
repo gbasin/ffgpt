@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 
 from .data import (
     ANSWER_MAX,
@@ -778,6 +779,11 @@ class FFAutoregressiveTrainer:
         eval_train_max_samples: int | None = None,
         eval_test_max_samples: int | None = None,
         enable_goodness_eval: bool = True,
+        output_embedding_detached: bool = True,
+        use_per_block_output_heads: bool = False,
+        final_block_loss_weight: float = 1.0,
+        nonfinal_block_loss_weight: float = 1.0,
+        block_output_head_states: list[dict[str, Any]] | None = None,
         device: str = "cpu",
         seed: int = 42,
         run_tag: str | None = None,
@@ -817,6 +823,15 @@ class FFAutoregressiveTrainer:
         self.eval_train_max_samples = int(eval_train_max_samples) if eval_train_max_samples is not None else None
         self.eval_test_max_samples = int(eval_test_max_samples) if eval_test_max_samples is not None else None
         self.enable_goodness_eval = bool(enable_goodness_eval)
+        self.output_embedding_detached = bool(output_embedding_detached)
+        self.use_per_block_output_heads = bool(use_per_block_output_heads)
+        self.final_block_loss_weight = float(final_block_loss_weight)
+        self.nonfinal_block_loss_weight = float(nonfinal_block_loss_weight)
+        if self.final_block_loss_weight <= 0.0 or self.nonfinal_block_loss_weight <= 0.0:
+            raise ValueError(
+                "final_block_loss_weight and nonfinal_block_loss_weight must be > 0. "
+                f"Got {self.final_block_loss_weight}, {self.nonfinal_block_loss_weight}"
+            )
 
         if candidate_answers is not None:
             cands = sorted(set(int(x) for x in candidate_answers if ANSWER_MIN <= int(x) <= self.max_answer_value))
@@ -829,8 +844,34 @@ class FFAutoregressiveTrainer:
         self.candidate_answers = cands
 
         self.model.to(self.device)
+        self.block_output_heads: nn.ModuleList | None = None
+        if self.use_per_block_output_heads:
+            self.block_output_heads = nn.ModuleList(
+                [nn.Linear(self.model.config.d_model, self.vocab.size, bias=True) for _ in self.model.blocks]
+            ).to(self.device)
+            if block_output_head_states is not None:
+                if len(block_output_head_states) != len(self.block_output_heads):
+                    raise ValueError(
+                        "block_output_head_states length mismatch: "
+                        f"expected {len(self.block_output_heads)}, got {len(block_output_head_states)}"
+                    )
+                for head, state in zip(self.block_output_heads, block_output_head_states):
+                    head.load_state_dict(state)
+            else:
+                # Start from embedding-tied weights to reduce cold-start mismatch.
+                embed = self.model.embedding_weight.detach()
+                for head in self.block_output_heads:
+                    head.weight.data.copy_(embed)
+                    head.bias.data.zero_()
+        elif block_output_head_states is not None:
+            raise ValueError("block_output_head_states provided but use_per_block_output_heads=False")
 
-        self.block_optimizers = [torch.optim.Adam(block.parameters(), lr=self.lr) for block in self.model.blocks]
+        self.block_optimizers = []
+        for block_idx, block in enumerate(self.model.blocks):
+            params = list(block.parameters())
+            if self.block_output_heads is not None:
+                params.extend(self.block_output_heads[block_idx].parameters())
+            self.block_optimizers.append(torch.optim.Adam(params, lr=self.lr))
         self.embedding_optimizer = torch.optim.Adam(
             list(self.model.token_embedding.parameters()) + list(self.model.position_embedding.parameters()),
             lr=self.lr,
@@ -849,6 +890,9 @@ class FFAutoregressiveTrainer:
             "step": [],
             "loss": [],
             "candidate_loss": [],
+            "candidate_loss_unweighted": [],
+            "candidate_loss_final_block": [],
+            "candidate_loss_nonfinal_mean": [],
             "goodness_aux_loss": [],
             "temperature": [],
             "train_token_accuracy": [],
@@ -911,6 +955,20 @@ class FFAutoregressiveTrainer:
             total_answer_tokens=self.max_answer_tokens,
             max_answer_value=self.max_answer_value,
         )
+
+    def _project_block_logits(self, block_idx: int, block_hidden: torch.Tensor) -> torch.Tensor:
+        if self.block_output_heads is not None:
+            return self.block_output_heads[block_idx](block_hidden)
+
+        embedding = self.model.embedding_weight
+        if self.output_embedding_detached:
+            embedding = embedding.detach()
+        return torch.matmul(block_hidden, embedding.T)
+
+    def _block_loss_weight(self, block_idx: int, n_blocks: int) -> float:
+        if block_idx == (n_blocks - 1):
+            return self.final_block_loss_weight
+        return self.nonfinal_block_loss_weight
 
     def _candidate_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         vocab_size = logits.shape[-1]
@@ -1086,6 +1144,15 @@ class FFAutoregressiveTrainer:
             "eval_train_max_samples": self.eval_train_max_samples,
             "eval_test_max_samples": self.eval_test_max_samples,
             "enable_goodness_eval": self.enable_goodness_eval,
+            "output_embedding_detached": self.output_embedding_detached,
+            "use_per_block_output_heads": self.use_per_block_output_heads,
+            "final_block_loss_weight": self.final_block_loss_weight,
+            "nonfinal_block_loss_weight": self.nonfinal_block_loss_weight,
+            "block_output_head_states": (
+                [head.state_dict() for head in self.block_output_heads]
+                if self.block_output_heads is not None
+                else None
+            ),
             "rng_states": capture_rng_states(),
         }
         path = self.checkpoint_dir / f"{self.checkpoint_prefix}_step{step}.pt"
@@ -1101,13 +1168,24 @@ class FFAutoregressiveTrainer:
             x_mask = x != self.vocab.pad_id
 
             block_outputs, _ = self.model(x, pad_mask=x_mask, causal=True, detach_between_blocks=True)
-            detached_embeddings = self.model.embedding_weight.detach()
+            n_blocks = len(block_outputs)
 
-            candidate_block_losses: list[torch.Tensor] = []
-            for block_hidden in block_outputs:
-                logits = torch.matmul(block_hidden, detached_embeddings.T)
-                candidate_block_losses.append(self._candidate_loss(logits, y))
-            candidate_loss_total = sum(candidate_block_losses)
+            candidate_block_losses_unweighted: list[torch.Tensor] = []
+            candidate_block_losses_weighted: list[torch.Tensor] = []
+            for block_idx, block_hidden in enumerate(block_outputs):
+                logits = self._project_block_logits(block_idx, block_hidden)
+                loss_k = self._candidate_loss(logits, y)
+                weight_k = self._block_loss_weight(block_idx, n_blocks)
+                candidate_block_losses_unweighted.append(loss_k)
+                candidate_block_losses_weighted.append(loss_k * weight_k)
+
+            candidate_loss_unweighted_total = sum(candidate_block_losses_unweighted)
+            candidate_loss_total = sum(candidate_block_losses_weighted)
+            candidate_loss_final_block = candidate_block_losses_unweighted[-1]
+            if n_blocks > 1:
+                candidate_loss_nonfinal_mean = torch.stack(candidate_block_losses_unweighted[:-1], dim=0).mean()
+            else:
+                candidate_loss_nonfinal_mean = torch.tensor(float("nan"), device=self.device)
 
             pos_mask = full_tokens != self.vocab.pad_id
             neg_tokens = self._build_negative_full_batch(batch_problems)
@@ -1233,6 +1311,8 @@ class FFAutoregressiveTrainer:
                     print(
                         f"[ff-ar step {step}] loss={total_loss.item():.4f} temp={self.temperature:.3f} "
                         f"cand={candidate_loss_total.item():.4f} "
+                        f"cand_unw={candidate_loss_unweighted_total.item():.4f} "
+                        f"cand_final={candidate_loss_final_block.item():.4f} "
                         f"good_aux={goodness_aux_loss_total.item():.4f} "
                         f"steps_per_sec={steps_per_sec:.2f} "
                         f"(eval skipped) {block_msg}"
@@ -1266,6 +1346,9 @@ class FFAutoregressiveTrainer:
                     self.history["step"].append(step)
                     self.history["loss"].append(float(total_loss.item()))
                     self.history["candidate_loss"].append(float(candidate_loss_total.item()))
+                    self.history["candidate_loss_unweighted"].append(float(candidate_loss_unweighted_total.item()))
+                    self.history["candidate_loss_final_block"].append(float(candidate_loss_final_block.item()))
+                    self.history["candidate_loss_nonfinal_mean"].append(float(candidate_loss_nonfinal_mean.item()))
                     self.history["goodness_aux_loss"].append(float(goodness_aux_loss_total.item()))
                     self.history["temperature"].append(float(self.temperature))
                     self.history["train_token_accuracy"].append(train_logits.token_accuracy)
@@ -1280,6 +1363,8 @@ class FFAutoregressiveTrainer:
                     print(
                         f"[ff-ar step {step}] loss={total_loss.item():.4f} temp={self.temperature:.3f} "
                         f"cand={candidate_loss_total.item():.4f} "
+                        f"cand_unw={candidate_loss_unweighted_total.item():.4f} "
+                        f"cand_final={candidate_loss_final_block.item():.4f} "
                         f"good_aux={goodness_aux_loss_total.item():.4f} "
                         f"steps_per_sec={steps_per_sec:.2f} "
                         f"train_exact={train_logits.sequence_exact_match:.3f} "

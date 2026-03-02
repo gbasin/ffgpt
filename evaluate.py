@@ -235,6 +235,11 @@ def main() -> None:
         eval_train_max_samples=ar_ckpt.get("eval_train_max_samples"),
         eval_test_max_samples=ar_ckpt.get("eval_test_max_samples"),
         enable_goodness_eval=ar_ckpt.get("enable_goodness_eval", True),
+        output_embedding_detached=ar_ckpt.get("output_embedding_detached", True),
+        use_per_block_output_heads=ar_ckpt.get("use_per_block_output_heads", False),
+        final_block_loss_weight=ar_ckpt.get("final_block_loss_weight", 1.0),
+        nonfinal_block_loss_weight=ar_ckpt.get("nonfinal_block_loss_weight", 1.0),
+        block_output_head_states=ar_ckpt.get("block_output_head_states"),
     )
 
     baseline_train = baseline_trainer.evaluate(train_eval_problems)
