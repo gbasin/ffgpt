@@ -249,3 +249,30 @@ The build order naturally creates ablations. Each step adds one component; diagn
 - **Per-block autoregressive CE for text is completely novel** — no prior art in any FF paper (all vision-only). This is the core research contribution.
 - **E quality depends on block 0** — if block 0's loss signal is weak, E could drift into a subspace not useful for deeper blocks (SimSiam analogy suggests this works, but not guaranteed)
 - **DeeperForward uses ReLU, we use GELU** — departure from paper, but POC confirms GELU works
+
+## Implementation Status (2026-03-02)
+
+### Completed and validated
+- Step 1 (`data.py`): tokenization, datasets, negative sampling, split diagnostics.
+- Step 2 (`model.py`): FF + baseline transformer architecture with detach-between-blocks behavior.
+- Step 3 (`goodness.py`): goodness metrics, FF losses, threshold EMA.
+- Step 4 (`bp_trainer.py`, `train_baseline.py`): baseline trainer implemented and validated on multiple digit settings.
+- Step 5 (`ff_trainer.py`, `train_discriminative.py`): discriminative FF loop implemented with per-block diagnostics and checkpointing.
+- Step 6 (`ff_trainer.py`, `train_autoregressive.py`): AR FF loop implemented with candidate-token loss and checkpointing.
+- Step 7 (`evaluate.py`, `utils.py`): cross-model eval, plotting, checkpoint loading, and summary export.
+
+### Added beyond original plan for efficiency/debugging
+- Coverage-preserving split to avoid train/test token-support pathologies.
+- Run-tag-aware checkpointing to prevent split/config collisions.
+- Multi-digit support across baseline + FF scripts (`--operand-digits`, dynamic seq length and answer sizing).
+- New instrumentation:
+  - eval subsampling and eval cadence controls for faster iterative experiments
+  - optional FF goodness-eval skip for large candidate spaces
+  - optional discriminative rank diagnostics toggle
+  - throughput logs (`steps_per_sec`) and eval set sizes
+- Research progress log at `notes/research_notebook.md`.
+
+### Still open / not yet implemented
+- Step 8 collaborative FF variants (two-phase collaboration, KL sync) are not implemented.
+- Phase 4 ablation `E.detach?` off (`C1`) is not yet run.
+- Goodness-based FF inference does not yet scale cleanly to very large answer spaces; large-digit experiments currently focus on logit inference.

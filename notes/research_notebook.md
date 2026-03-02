@@ -87,3 +87,27 @@
 - Switched discriminative default logit inference from candidate enumeration to greedy decoding for speed.
 - Added throughput logging (`steps_per_sec`) and eval subset sizes in FF logs.
 - Validated 2-digit smoke runs for baseline, FF-discriminative, and FF-autoregressive with the new options.
+
+### Entry 12
+- 2-digit scaling sweep (`random` split, 400 steps, eval on held-out set):
+  - `n=2000`: baseline test exact `0.215`, FF-discriminative(logits) `0.030`, FF-autoregressive(logits) `0.020`.
+  - `n=10000`: baseline test exact `0.205`, FF-discriminative(logits) `0.031`, FF-autoregressive(logits) `0.025`.
+- Takeaway: with this budget, FF improves only marginally with more data at 2 digits and remains far below baseline exact-match.
+
+### Entry 13
+- 3-digit runs (`n=20000`, random split):
+  - 400-step regime is undertrained for everyone:
+    - baseline test exact `~0.004`
+    - FF-discriminative(logits) test exact `~0.002`
+    - FF-autoregressive(logits) test exact `~0.000`
+  - 2000-step regime:
+    - baseline test exact jumps to `0.266` (clear undertraining confirmation)
+    - FF-discriminative(logits) stays near `0.000`
+    - FF-autoregressive(logits) stays near `0.004`
+- Takeaway: baseline is strongly step-limited and scales with training time; current FF objectives remain near chance on exact-match at 3 digits even when baseline learns.
+
+### Entry 14
+- 5-digit run (`n=20000`, random split, 400 steps):
+  - baseline, FF-discriminative(logits), and FF-autoregressive(logits) all at `0.000` exact-match.
+  - token accuracy non-zero but low (`~0.19-0.28`) indicates partial token learning without full-equation correctness.
+- Takeaway: this setting is severely undertrained for exact-match at 5 digits across all methods.
