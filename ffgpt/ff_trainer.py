@@ -13,8 +13,8 @@ from .data import (
     ANSWER_MIN,
     Problem,
     Vocab,
-    answer_to_token_ids,
-    parse_answer_tokens,
+    answer_to_token_ids_variable,
+    parse_answer_tokens_variable,
     sample_negative_answer,
     sample_negatives,
 )
@@ -55,6 +55,11 @@ class FFDiscriminativeTrainer:
         checkpoint_dir: str = "checkpoints",
         threshold_momentum: float = 0.9,
         logit_aux_weight: float = 1.0,
+        sequence_length: int | None = None,
+        max_answer_tokens: int | None = None,
+        max_answer_value: int | None = None,
+        max_full_candidate_answers: int = 2048,
+        candidate_answers: list[int] | None = None,
         near_miss_start_step: int | None = None,
         near_miss_offsets: tuple[int, ...] = (1,),
         device: str = "cpu",
@@ -72,12 +77,36 @@ class FFDiscriminativeTrainer:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.threshold_momentum = threshold_momentum
         self.logit_aux_weight = float(logit_aux_weight)
+        self.sequence_length = int(sequence_length) if sequence_length is not None else int(self.model.config.max_seq_len)
         self.near_miss_start_step = near_miss_start_step
         self.near_miss_offsets = tuple(int(x) for x in near_miss_offsets)
         self.device = torch.device(device)
         self.seed = seed
         self.run_tag = run_tag
         self.checkpoint_prefix = build_checkpoint_prefix(mode="discriminative", run_tag=run_tag)
+
+        if self.sequence_length > self.model.config.max_seq_len:
+            raise ValueError(
+                f"sequence_length={self.sequence_length} exceeds model max_seq_len={self.model.config.max_seq_len}"
+            )
+
+        all_problems = self.train_problems + self.test_problems
+        inferred_max_answer_tokens = max((len(str(problem.answer)) for problem in all_problems), default=2)
+        self.max_answer_tokens = int(max_answer_tokens) if max_answer_tokens is not None else inferred_max_answer_tokens
+        inferred_max_answer_value = max((problem.answer for problem in all_problems), default=ANSWER_MAX)
+        self.max_answer_value = int(max_answer_value) if max_answer_value is not None else inferred_max_answer_value
+        self.max_full_candidate_answers = int(max_full_candidate_answers)
+
+        if candidate_answers is not None:
+            cands = sorted(set(int(x) for x in candidate_answers if ANSWER_MIN <= int(x) <= self.max_answer_value))
+        elif (self.max_answer_value - ANSWER_MIN + 1) <= self.max_full_candidate_answers:
+            cands = list(range(ANSWER_MIN, self.max_answer_value + 1))
+        else:
+            cands = sorted(set(int(problem.answer) for problem in all_problems))
+        if not cands:
+            raise ValueError("candidate answer pool is empty")
+        self.candidate_answers = cands
+        self.answer_to_candidate_index = {answer: idx for idx, answer in enumerate(self.candidate_answers)}
 
         self.model.to(self.device)
 
@@ -133,9 +162,10 @@ class FFDiscriminativeTrainer:
                 strategy=strategy,
                 near_miss_offsets=self.near_miss_offsets,
                 rng=self.rng,
+                answer_max=self.max_answer_value,
             )
-            pos.append(self.vocab.encode_equation(problem.a, problem.b, problem.answer))
-            neg.append(self.vocab.encode_equation(problem.a, problem.b, negative_answer))
+            pos.append(self.vocab.encode_equation(problem.a, problem.b, problem.answer, max_len=self.sequence_length))
+            neg.append(self.vocab.encode_equation(problem.a, problem.b, negative_answer, max_len=self.sequence_length))
 
         pos_tokens = torch.tensor(pos, dtype=torch.long, device=self.device)
         neg_tokens = torch.tensor(neg, dtype=torch.long, device=self.device)
@@ -144,6 +174,14 @@ class FFDiscriminativeTrainer:
     def _prompt_token_ids(self, a: int, b: int) -> list[int]:
         prompt_tokens = [*list(str(a)), "+", *list(str(b)), "="]
         return self.vocab.encode_tokens(prompt_tokens)
+
+    def _target_tokens(self, answer: int) -> list[int]:
+        return answer_to_token_ids_variable(
+            answer=answer,
+            vocab=self.vocab,
+            total_answer_tokens=self.max_answer_tokens,
+            max_answer_value=self.max_answer_value,
+        )
 
     def _answer_token_ce_loss(self, block_hidden: torch.Tensor, x_tokens: torch.Tensor, y_tokens: torch.Tensor) -> torch.Tensor:
         """Cross-entropy on answer-generation positions only (after '=')."""
@@ -174,9 +212,9 @@ class FFDiscriminativeTrainer:
         b: int,
         causal: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        candidates = list(range(ANSWER_MIN, ANSWER_MAX + 1))
+        candidates = self.candidate_answers
         token_batch = torch.tensor(
-            [self.vocab.encode_equation(a, b, candidate) for candidate in candidates],
+            [self.vocab.encode_equation(a, b, candidate, max_len=self.sequence_length) for candidate in candidates],
             dtype=torch.long,
             device=self.device,
         )
@@ -195,11 +233,11 @@ class FFDiscriminativeTrainer:
     @torch.no_grad()
     def _score_candidates_logits(self, a: int, b: int) -> torch.Tensor:
         """Autoregressive candidate scoring using final-block logits."""
-        candidates = list(range(ANSWER_MIN, ANSWER_MAX + 1))
+        candidates = self.candidate_answers
         scores = torch.zeros(len(candidates), device=self.device)
 
         for cand_idx, answer in enumerate(candidates):
-            answer_tokens = answer_to_token_ids(answer, self.vocab)
+            answer_tokens = self._target_tokens(answer)
             context = self._prompt_token_ids(a, b)
             score = 0.0
 
@@ -219,15 +257,20 @@ class FFDiscriminativeTrainer:
     @torch.no_grad()
     def predict_with_goodness(self, a: int, b: int, causal: bool = False) -> tuple[int, list[int]]:
         total_scores, block_scores = self._score_candidates_goodness(a=a, b=b, causal=causal)
-        pred = int(torch.argmax(total_scores).item())
-        block_preds = [int(torch.argmax(block_scores[block_idx]).item()) for block_idx in range(block_scores.shape[0])]
+        pred_idx = int(torch.argmax(total_scores).item())
+        pred = int(self.candidate_answers[pred_idx])
+        block_preds = [
+            int(self.candidate_answers[int(torch.argmax(block_scores[block_idx]).item())])
+            for block_idx in range(block_scores.shape[0])
+        ]
         return pred, block_preds
 
     @torch.no_grad()
     def predict_with_logits(self, a: int, b: int) -> tuple[int | None, list[int]]:
         scores = self._score_candidates_logits(a=a, b=b)
-        pred_answer = int(torch.argmax(scores).item())
-        return pred_answer, answer_to_token_ids(pred_answer, self.vocab)
+        pred_idx = int(torch.argmax(scores).item())
+        pred_answer = int(self.candidate_answers[pred_idx])
+        return pred_answer, self._target_tokens(pred_answer)
 
     @torch.no_grad()
     def evaluate_goodness(self, problems: list[Problem], causal: bool = False) -> FFGoodnessEvalResult:
@@ -243,8 +286,8 @@ class FFDiscriminativeTrainer:
 
         for problem in problems:
             pred_answer, block_preds = self.predict_with_goodness(problem.a, problem.b, causal=causal)
-            target_tokens = answer_to_token_ids(problem.answer, self.vocab)
-            pred_tokens = answer_to_token_ids(pred_answer, self.vocab)
+            target_tokens = self._target_tokens(problem.answer)
+            pred_tokens = self._target_tokens(pred_answer)
 
             token_correct += sum(int(p == t) for p, t in zip(pred_tokens, target_tokens))
             token_total += len(target_tokens)
@@ -276,7 +319,7 @@ class FFDiscriminativeTrainer:
 
         for problem in problems:
             pred_answer, pred_tokens = self.predict_with_logits(problem.a, problem.b)
-            target_tokens = answer_to_token_ids(problem.answer, self.vocab)
+            target_tokens = self._target_tokens(problem.answer)
 
             token_correct += sum(int(p == t) for p, t in zip(pred_tokens, target_tokens))
             token_total += len(target_tokens)
@@ -300,7 +343,7 @@ class FFDiscriminativeTrainer:
         collect_examples: bool = True,
         max_examples: int = 20,
     ) -> dict[str, Any]:
-        candidates = list(range(ANSWER_MIN, ANSWER_MAX + 1))
+        candidates = self.candidate_answers
         per_sum: dict[int, dict[str, int]] = {}
         correct_ranks: list[int] = []
         examples: list[dict[str, Any]] = []
@@ -312,9 +355,13 @@ class FFDiscriminativeTrainer:
             pred_answer = candidates[pred_idx]
             exact_matches += int(pred_answer == problem.answer)
 
-            target_idx = int(problem.answer - ANSWER_MIN)
-            target_score = float(scores[target_idx].item())
-            rank = int((scores > target_score).sum().item()) + 1
+            target_idx = self.answer_to_candidate_index.get(int(problem.answer))
+            if target_idx is None:
+                target_score = float("-inf")
+                rank = len(candidates) + 1
+            else:
+                target_score = float(scores[target_idx].item())
+                rank = int((scores > target_score).sum().item()) + 1
             correct_ranks.append(rank)
 
             stats = per_sum.setdefault(problem.answer, {"count": 0, "correct": 0})
@@ -370,6 +417,11 @@ class FFDiscriminativeTrainer:
             "run_tag": self.run_tag,
             "checkpoint_prefix": self.checkpoint_prefix,
             "logit_aux_weight": self.logit_aux_weight,
+            "sequence_length": self.sequence_length,
+            "max_answer_tokens": self.max_answer_tokens,
+            "max_answer_value": self.max_answer_value,
+            "candidate_answers": self.candidate_answers,
+            "max_full_candidate_answers": self.max_full_candidate_answers,
             "rng_states": capture_rng_states(),
         }
         path = self.checkpoint_dir / f"{self.checkpoint_prefix}_step{step}.pt"
@@ -581,6 +633,11 @@ class FFAutoregressiveTrainer:
         temperature_min: float = 0.1,
         goodness_aux_weight: float = 1.0,
         threshold_momentum: float = 0.9,
+        sequence_length: int | None = None,
+        max_answer_tokens: int | None = None,
+        max_answer_value: int | None = None,
+        max_full_candidate_answers: int = 2048,
+        candidate_answers: list[int] | None = None,
         device: str = "cpu",
         seed: int = 42,
         run_tag: str | None = None,
@@ -599,10 +656,33 @@ class FFAutoregressiveTrainer:
         self.temperature_min = float(temperature_min)
         self.goodness_aux_weight = float(goodness_aux_weight)
         self.threshold_momentum = float(threshold_momentum)
+        self.sequence_length = int(sequence_length) if sequence_length is not None else int(self.model.config.max_seq_len)
         self.device = torch.device(device)
         self.seed = seed
         self.run_tag = run_tag
         self.checkpoint_prefix = build_checkpoint_prefix(mode="autoregressive", run_tag=run_tag)
+
+        if self.sequence_length > self.model.config.max_seq_len:
+            raise ValueError(
+                f"sequence_length={self.sequence_length} exceeds model max_seq_len={self.model.config.max_seq_len}"
+            )
+
+        all_problems = self.train_problems + self.test_problems
+        inferred_max_answer_tokens = max((len(str(problem.answer)) for problem in all_problems), default=2)
+        self.max_answer_tokens = int(max_answer_tokens) if max_answer_tokens is not None else inferred_max_answer_tokens
+        inferred_max_answer_value = max((problem.answer for problem in all_problems), default=ANSWER_MAX)
+        self.max_answer_value = int(max_answer_value) if max_answer_value is not None else inferred_max_answer_value
+        self.max_full_candidate_answers = int(max_full_candidate_answers)
+
+        if candidate_answers is not None:
+            cands = sorted(set(int(x) for x in candidate_answers if ANSWER_MIN <= int(x) <= self.max_answer_value))
+        elif (self.max_answer_value - ANSWER_MIN + 1) <= self.max_full_candidate_answers:
+            cands = list(range(ANSWER_MIN, self.max_answer_value + 1))
+        else:
+            cands = sorted(set(int(problem.answer) for problem in all_problems))
+        if not cands:
+            raise ValueError("candidate answer pool is empty")
+        self.candidate_answers = cands
 
         self.model.to(self.device)
 
@@ -646,7 +726,7 @@ class FFAutoregressiveTrainer:
 
     def _build_autoregressive_batch(self, problems: list[Problem]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         full = torch.tensor(
-            [self.vocab.encode_equation(problem.a, problem.b, problem.answer) for problem in problems],
+            [self.vocab.encode_equation(problem.a, problem.b, problem.answer, max_len=self.sequence_length) for problem in problems],
             dtype=torch.long,
             device=self.device,
         )
@@ -657,13 +737,26 @@ class FFAutoregressiveTrainer:
     def _build_negative_full_batch(self, problems: list[Problem]) -> torch.Tensor:
         negatives = []
         for problem in problems:
-            negative_answer = sample_negative_answer(problem.answer, strategy="random", rng=self.rng)
-            negatives.append(self.vocab.encode_equation(problem.a, problem.b, negative_answer))
+            negative_answer = sample_negative_answer(
+                problem.answer,
+                strategy="random",
+                rng=self.rng,
+                answer_max=self.max_answer_value,
+            )
+            negatives.append(self.vocab.encode_equation(problem.a, problem.b, negative_answer, max_len=self.sequence_length))
         return torch.tensor(negatives, dtype=torch.long, device=self.device)
 
     def _prompt_token_ids(self, a: int, b: int) -> list[int]:
         prompt_tokens = [*list(str(a)), "+", *list(str(b)), "="]
         return self.vocab.encode_tokens(prompt_tokens)
+
+    def _target_tokens(self, answer: int) -> list[int]:
+        return answer_to_token_ids_variable(
+            answer=answer,
+            vocab=self.vocab,
+            total_answer_tokens=self.max_answer_tokens,
+            max_answer_value=self.max_answer_value,
+        )
 
     def _candidate_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         vocab_size = logits.shape[-1]
@@ -696,9 +789,9 @@ class FFAutoregressiveTrainer:
         b: int,
         causal: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        candidates = list(range(ANSWER_MIN, ANSWER_MAX + 1))
+        candidates = self.candidate_answers
         token_batch = torch.tensor(
-            [self.vocab.encode_equation(a, b, candidate) for candidate in candidates],
+            [self.vocab.encode_equation(a, b, candidate, max_len=self.sequence_length) for candidate in candidates],
             dtype=torch.long,
             device=self.device,
         )
@@ -716,8 +809,12 @@ class FFAutoregressiveTrainer:
     @torch.no_grad()
     def predict_with_goodness(self, a: int, b: int) -> tuple[int, list[int]]:
         total, block_scores = self._score_candidates_goodness(a, b, causal=True)
-        pred = int(torch.argmax(total).item())
-        block_preds = [int(torch.argmax(block_scores[block_idx]).item()) for block_idx in range(block_scores.shape[0])]
+        pred_idx = int(torch.argmax(total).item())
+        pred = int(self.candidate_answers[pred_idx])
+        block_preds = [
+            int(self.candidate_answers[int(torch.argmax(block_scores[block_idx]).item())])
+            for block_idx in range(block_scores.shape[0])
+        ]
         return pred, block_preds
 
     @torch.no_grad()
@@ -725,7 +822,7 @@ class FFAutoregressiveTrainer:
         context = self._prompt_token_ids(a, b)
         generated: list[int] = []
 
-        for _ in range(2):
+        for _ in range(self.max_answer_tokens):
             input_ids = torch.tensor([context], dtype=torch.long, device=self.device)
             pad_mask = input_ids != self.vocab.pad_id
             block_outputs, _ = self.model(input_ids, pad_mask=pad_mask, causal=True, detach_between_blocks=True)
@@ -737,10 +834,15 @@ class FFAutoregressiveTrainer:
             if next_token == self.vocab.pad_id:
                 break
 
-        if len(generated) < 2:
-            generated.extend([self.vocab.pad_id] * (2 - len(generated)))
+        if len(generated) < self.max_answer_tokens:
+            generated.extend([self.vocab.pad_id] * (self.max_answer_tokens - len(generated)))
 
-        pred_answer, normalized_tokens = parse_answer_tokens(generated[:2], self.vocab)
+        pred_answer, normalized_tokens = parse_answer_tokens_variable(
+            generated[: self.max_answer_tokens],
+            self.vocab,
+            expected_length=self.max_answer_tokens,
+            max_answer_value=self.max_answer_value,
+        )
         return pred_answer, normalized_tokens
 
     @torch.no_grad()
@@ -753,7 +855,7 @@ class FFAutoregressiveTrainer:
 
         for problem in problems:
             pred_answer, pred_tokens = self.predict_with_logits(problem.a, problem.b)
-            target_tokens = answer_to_token_ids(problem.answer, self.vocab)
+            target_tokens = self._target_tokens(problem.answer)
 
             token_correct += sum(int(p == t) for p, t in zip(pred_tokens, target_tokens))
             token_total += len(target_tokens)
@@ -783,8 +885,8 @@ class FFAutoregressiveTrainer:
 
         for problem in problems:
             pred_answer, block_preds = self.predict_with_goodness(problem.a, problem.b)
-            target_tokens = answer_to_token_ids(problem.answer, self.vocab)
-            pred_tokens = answer_to_token_ids(pred_answer, self.vocab)
+            target_tokens = self._target_tokens(problem.answer)
+            pred_tokens = self._target_tokens(pred_answer)
 
             token_correct += sum(int(p == t) for p, t in zip(pred_tokens, target_tokens))
             token_total += len(target_tokens)
@@ -821,6 +923,11 @@ class FFAutoregressiveTrainer:
             "checkpoint_prefix": self.checkpoint_prefix,
             "goodness_aux_weight": self.goodness_aux_weight,
             "threshold_momentum": self.threshold_momentum,
+            "sequence_length": self.sequence_length,
+            "max_answer_tokens": self.max_answer_tokens,
+            "max_answer_value": self.max_answer_value,
+            "candidate_answers": self.candidate_answers,
+            "max_full_candidate_answers": self.max_full_candidate_answers,
             "rng_states": capture_rng_states(),
         }
         path = self.checkpoint_dir / f"{self.checkpoint_prefix}_step{step}.pt"

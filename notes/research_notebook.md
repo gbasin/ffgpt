@@ -61,3 +61,19 @@
   - baseline (4-digit, random split, 10k samples): test exact `~0.85` after 2k steps
   - baseline (5-digit, random split, 12k samples): still low at 2.5k steps (undertrained regime)
 - Conclusion: larger-scale baseline clearly improves with enough data/steps; FF scaling to higher digits is not yet tested in current implementation.
+
+### Entry 9
+- Started multi-digit FF refactor (AR first):
+  - FF trainers now support variable `sequence_length`, `max_answer_tokens`, `max_answer_value`.
+  - Candidate pools are no longer hard-coded to `0..18`; derived from full range when small, otherwise from observed sums.
+  - Added run-tag-aware checkpoint metadata for these new settings.
+- Next: smoke test single-digit compatibility, then run 2-digit AR and 2-digit discriminative pilots.
+
+### Entry 10
+- Fixed a regression in multi-digit refactor:
+  - `FFAutoregressiveTrainer` was missing `_target_tokens`, causing AR eval/training calls to fail.
+  - `FFDiscriminativeTrainer` had duplicate `_target_tokens` definitions from a bad merge.
+- Ran smoke checks on `.venv/bin/python` after fix:
+  - discriminative 1-digit (`steps=5`) executes end-to-end and saves checkpoint.
+  - autoregressive 1-digit (`steps=5`) executes end-to-end and saves checkpoint.
+- Multi-digit pilots are now unblocked.

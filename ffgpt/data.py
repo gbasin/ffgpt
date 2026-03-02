@@ -296,21 +296,25 @@ def sample_negative_answer(
     strategy: str = "random",
     near_miss_offsets: Sequence[int] = (1,),
     rng: random.Random | None = None,
+    answer_min: int = ANSWER_MIN,
+    answer_max: int = ANSWER_MAX,
 ) -> int:
     rng = rng or random
     strategy = strategy.lower()
+    if answer_min > answer_max:
+        raise ValueError(f"answer_min={answer_min} must be <= answer_max={answer_max}")
 
     if strategy == "near_miss":
         candidates: list[int] = []
         for offset in near_miss_offsets:
             for sign in (-1, 1):
                 candidate = correct_answer + sign * int(offset)
-                if ANSWER_MIN <= candidate <= ANSWER_MAX and candidate != correct_answer:
+                if answer_min <= candidate <= answer_max and candidate != correct_answer:
                     candidates.append(candidate)
         if candidates:
             return int(rng.choice(candidates))
 
-    all_candidates = [x for x in range(ANSWER_MIN, ANSWER_MAX + 1) if x != correct_answer]
+    all_candidates = [x for x in range(answer_min, answer_max + 1) if x != correct_answer]
     return int(rng.choice(all_candidates))
 
 
@@ -339,6 +343,8 @@ class DiscriminativeDataset(Dataset[dict[str, torch.Tensor | int]]):
         negative_strategy: str = "random",
         near_miss_offsets: Sequence[int] = (1,),
         max_len: int = MAX_SEQ_LEN,
+        answer_min: int = ANSWER_MIN,
+        answer_max: int | None = None,
         seed: int | None = None,
     ) -> None:
         self.problems = list(problems)
@@ -346,6 +352,9 @@ class DiscriminativeDataset(Dataset[dict[str, torch.Tensor | int]]):
         self.negative_strategy = negative_strategy
         self.near_miss_offsets = tuple(int(x) for x in near_miss_offsets)
         self.max_len = int(max_len)
+        inferred_answer_max = max((problem.answer for problem in self.problems), default=ANSWER_MAX)
+        self.answer_min = int(answer_min)
+        self.answer_max = int(answer_max) if answer_max is not None else inferred_answer_max
         self.rng = random.Random(seed)
 
     def __len__(self) -> int:
@@ -363,6 +372,8 @@ class DiscriminativeDataset(Dataset[dict[str, torch.Tensor | int]]):
             strategy=self.negative_strategy,
             near_miss_offsets=self.near_miss_offsets,
             rng=self.rng,
+            answer_min=self.answer_min,
+            answer_max=self.answer_max,
         )
         pos_tokens = tokenize_problem(problem, self.vocab, max_len=self.max_len)
         neg_tokens = torch.tensor(

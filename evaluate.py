@@ -14,6 +14,9 @@ from ffgpt import (
     Vocab,
     coverage_preserving_sum_split,
     generate_all_problems,
+    generate_problems_for_operand_digits,
+    max_seq_len_for_operand_digits,
+    max_sum_for_operand_digits,
     summarize_answer_token_coverage,
     train_test_split,
 )
@@ -36,6 +39,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--autoregressive-checkpoint", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default="checkpoints/eval")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--operand-digits", type=int, default=1)
+    parser.add_argument("--samples", type=int, default=0, help="0 => exhaustive when feasible")
+    parser.add_argument("--exhaustive-limit", type=int, default=100_000)
     parser.add_argument("--split", type=str, default="mod5", choices=["mod5", "coverage", "random"])
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--test-size", type=int, default=20)
@@ -76,7 +82,15 @@ def main() -> None:
 
     out_dir = ensure_dir(args.output_dir)
     vocab = Vocab()
-    problems = generate_all_problems()
+    if args.operand_digits == 1 and args.samples == 0:
+        problems = generate_all_problems()
+    else:
+        problems = generate_problems_for_operand_digits(
+            operand_digits=args.operand_digits,
+            num_samples=None if args.samples == 0 else args.samples,
+            seed=args.split_seed,
+            exhaustive_limit=args.exhaustive_limit,
+        )
     if args.test_size <= 0 or args.test_size >= len(problems):
         raise ValueError(f"--test-size must be in [1, {len(problems)-1}], got {args.test_size}")
 
@@ -100,14 +114,21 @@ def main() -> None:
 
     print(
         f"[split] strategy={args.split} train={len(train_problems)} test={len(test_problems)} "
-        f"split_seed={args.split_seed}"
+        f"split_seed={args.split_seed} operand_digits={args.operand_digits}"
     )
-    run_tag = args.run_tag if args.run_tag is not None else f"{args.split}_s{args.split_seed}"
+    run_tag = (
+        args.run_tag
+        if args.run_tag is not None
+        else f"d{args.operand_digits}_{args.split}_s{args.split_seed}"
+    )
     print(f"[run] run_tag={run_tag}")
+    max_answer_tokens = args.operand_digits + 1
+    max_answer_value = max_sum_for_operand_digits(args.operand_digits)
+    max_seq_len = max_seq_len_for_operand_digits(args.operand_digits)
     coverage = summarize_answer_token_coverage(
         train_problems=train_problems,
         test_problems=test_problems,
-        max_answer_tokens=2,
+        max_answer_tokens=max_answer_tokens,
     )
     missing = coverage["missing_test_tokens_in_train_by_position"]
     if any(missing):
@@ -155,9 +176,9 @@ def main() -> None:
         num_steps=0,
         checkpoint_dir=args.checkpoint_dir,
         device=args.device,
-        sequence_length=baseline_ckpt.get("sequence_length"),
-        max_answer_tokens=baseline_ckpt.get("max_answer_tokens"),
-        max_answer_value=baseline_ckpt.get("max_answer_value"),
+        sequence_length=baseline_ckpt.get("sequence_length", max_seq_len),
+        max_answer_tokens=baseline_ckpt.get("max_answer_tokens", max_answer_tokens),
+        max_answer_value=baseline_ckpt.get("max_answer_value", max_answer_value),
     )
     disc_trainer = FFDiscriminativeTrainer(
         model=disc_model,
@@ -167,6 +188,11 @@ def main() -> None:
         num_steps=0,
         checkpoint_dir=args.checkpoint_dir,
         device=args.device,
+        sequence_length=disc_ckpt.get("sequence_length", max_seq_len),
+        max_answer_tokens=disc_ckpt.get("max_answer_tokens", max_answer_tokens),
+        max_answer_value=disc_ckpt.get("max_answer_value", max_answer_value),
+        max_full_candidate_answers=disc_ckpt.get("max_full_candidate_answers", 2048),
+        candidate_answers=disc_ckpt.get("candidate_answers"),
     )
     ar_trainer = FFAutoregressiveTrainer(
         model=ar_model,
@@ -176,6 +202,11 @@ def main() -> None:
         num_steps=0,
         checkpoint_dir=args.checkpoint_dir,
         device=args.device,
+        sequence_length=ar_ckpt.get("sequence_length", max_seq_len),
+        max_answer_tokens=ar_ckpt.get("max_answer_tokens", max_answer_tokens),
+        max_answer_value=ar_ckpt.get("max_answer_value", max_answer_value),
+        max_full_candidate_answers=ar_ckpt.get("max_full_candidate_answers", 2048),
+        candidate_answers=ar_ckpt.get("candidate_answers"),
     )
 
     baseline_train = baseline_trainer.evaluate(train_problems)
@@ -201,15 +232,19 @@ def main() -> None:
     ar_train_good = ar_trainer.evaluate_goodness(train_problems)
     ar_test_good = ar_trainer.evaluate_goodness(test_problems)
 
-    baseline_train_cm = compute_confusion_matrix(baseline_train.targets, baseline_train.predictions)
-    baseline_test_cm = compute_confusion_matrix(baseline_test.targets, baseline_test.predictions)
-    disc_test_cm = compute_confusion_matrix(disc_test_good.targets, disc_test_good.predictions)
-    ar_test_cm = compute_confusion_matrix(ar_test_logits.targets, ar_test_logits.predictions)
+    num_classes = max_answer_value + 1
+    if num_classes <= 512:
+        baseline_train_cm = compute_confusion_matrix(baseline_train.targets, baseline_train.predictions, num_classes=num_classes)
+        baseline_test_cm = compute_confusion_matrix(baseline_test.targets, baseline_test.predictions, num_classes=num_classes)
+        disc_test_cm = compute_confusion_matrix(disc_test_good.targets, disc_test_good.predictions, num_classes=num_classes)
+        ar_test_cm = compute_confusion_matrix(ar_test_logits.targets, ar_test_logits.predictions, num_classes=num_classes)
 
-    plot_confusion_matrix(baseline_train_cm, out_dir / "baseline_train_confusion.png", "Baseline Train Confusion")
-    plot_confusion_matrix(baseline_test_cm, out_dir / "baseline_test_confusion.png", "Baseline Test Confusion")
-    plot_confusion_matrix(disc_test_cm, out_dir / "discriminative_test_confusion.png", "Discriminative FF Test Confusion")
-    plot_confusion_matrix(ar_test_cm, out_dir / "autoregressive_test_confusion.png", "Autoregressive FF Test Confusion")
+        plot_confusion_matrix(baseline_train_cm, out_dir / "baseline_train_confusion.png", "Baseline Train Confusion")
+        plot_confusion_matrix(baseline_test_cm, out_dir / "baseline_test_confusion.png", "Baseline Test Confusion")
+        plot_confusion_matrix(disc_test_cm, out_dir / "discriminative_test_confusion.png", "Discriminative FF Test Confusion")
+        plot_confusion_matrix(ar_test_cm, out_dir / "autoregressive_test_confusion.png", "Autoregressive FF Test Confusion")
+    else:
+        print(f"[warn] skipping confusion matrices because num_classes={num_classes} > 512")
 
     for name, ckpt in [
         ("baseline", baseline_ckpt),

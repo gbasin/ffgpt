@@ -9,6 +9,9 @@ from ffgpt import (
     Vocab,
     coverage_preserving_sum_split,
     generate_all_problems,
+    generate_problems_for_operand_digits,
+    max_seq_len_for_operand_digits,
+    max_sum_for_operand_digits,
     run_roundtrip_tests,
     summarize_answer_token_coverage,
     train_test_split,
@@ -21,6 +24,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--steps", type=int, default=5000)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--operand-digits", type=int, default=1)
+    parser.add_argument("--samples", type=int, default=0, help="0 => exhaustive when feasible")
+    parser.add_argument("--exhaustive-limit", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument("--checkpoint-every", type=int, default=1000)
@@ -39,16 +45,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature-min", type=float, default=0.1)
     parser.add_argument("--goodness-aux-weight", type=float, default=1.0)
     parser.add_argument("--threshold-momentum", type=float, default=0.9)
+    parser.add_argument("--max-full-candidate-answers", type=int, default=2048)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
-    run_roundtrip_tests()
+    if args.operand_digits == 1:
+        run_roundtrip_tests()
 
     vocab = Vocab()
-    problems = generate_all_problems()
+    if args.operand_digits == 1 and args.samples == 0:
+        problems = generate_all_problems()
+    else:
+        problems = generate_problems_for_operand_digits(
+            operand_digits=args.operand_digits,
+            num_samples=None if args.samples == 0 else args.samples,
+            seed=args.seed,
+            exhaustive_limit=args.exhaustive_limit,
+        )
     if args.test_size <= 0 or args.test_size >= len(problems):
         raise ValueError(f"--test-size must be in [1, {len(problems)-1}], got {args.test_size}")
 
@@ -72,14 +88,21 @@ def main() -> None:
 
     print(
         f"[split] strategy={args.split} train={len(train_problems)} test={len(test_problems)} "
-        f"split_seed={args.split_seed}"
+        f"split_seed={args.split_seed} operand_digits={args.operand_digits}"
     )
-    run_tag = args.run_tag if args.run_tag is not None else f"{args.split}_s{args.split_seed}"
+    run_tag = (
+        args.run_tag
+        if args.run_tag is not None
+        else f"d{args.operand_digits}_{args.split}_s{args.split_seed}"
+    )
     print(f"[run] run_tag={run_tag}")
+    max_answer_tokens = args.operand_digits + 1
+    max_answer_value = max_sum_for_operand_digits(args.operand_digits)
+    max_seq_len = max_seq_len_for_operand_digits(args.operand_digits)
     coverage = summarize_answer_token_coverage(
         train_problems=train_problems,
         test_problems=test_problems,
-        max_answer_tokens=2,
+        max_answer_tokens=max_answer_tokens,
     )
     missing = coverage["missing_test_tokens_in_train_by_position"]
     if any(missing):
@@ -89,7 +112,7 @@ def main() -> None:
 
     config = TransformerConfig(
         vocab_size=vocab.size,
-        max_seq_len=6,
+        max_seq_len=max_seq_len,
         d_model=args.d_model,
         n_heads=args.n_heads,
         n_blocks=args.n_blocks,
@@ -114,6 +137,10 @@ def main() -> None:
         temperature_min=args.temperature_min,
         goodness_aux_weight=args.goodness_aux_weight,
         threshold_momentum=args.threshold_momentum,
+        sequence_length=max_seq_len,
+        max_answer_tokens=max_answer_tokens,
+        max_answer_value=max_answer_value,
+        max_full_candidate_answers=args.max_full_candidate_answers,
         device=args.device,
         seed=args.seed,
         run_tag=run_tag,
