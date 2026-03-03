@@ -348,12 +348,20 @@ def main() -> None:
     refine_csv = out_dir / f"{args.run_prefix}_{timestamp}_refine_summary.csv"
 
     json_path.write_text(json.dumps(result_blob, indent=2), encoding="utf-8")
-    write_csv(coarse_csv, coarse_summary)
-    write_csv(refine_csv, refine_summary)
+    if coarse_summary:
+        write_csv(coarse_csv, coarse_summary)
+    if refine_summary:
+        write_csv(refine_csv, refine_summary)
 
     print(f"\n[done] wrote {json_path}")
-    print(f"[done] wrote {coarse_csv}")
-    print(f"[done] wrote {refine_csv}")
+    if coarse_summary:
+        print(f"[done] wrote {coarse_csv}")
+    else:
+        print("[done] coarse summary is empty; no coarse CSV written")
+    if refine_summary:
+        print(f"[done] wrote {refine_csv}")
+    else:
+        print("[done] refine summary is empty; no refine CSV written")
 
 
 if __name__ == "__main__":

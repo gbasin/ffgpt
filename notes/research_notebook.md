@@ -307,3 +307,37 @@
 - Takeaway:
   - Earlier ad hoc tuned point (`aux=0.25, nonfinal=0.25`) was not near peak.
   - Best region is lower aux scale (`~0.05-0.1`) with moderate nonfinal weight (`~0.1-0.25`).
+
+### Entry 30
+- Implemented Step-8 collaboration variants in `FFDiscriminativeTrainer`:
+  - **D1:** two-phase collaborative goodness offset with stop-grad cached cross-block terms (`collaborative_global_offset_weight`).
+  - **D2:** KL sync from final block to non-final blocks on answer positions (`kl_sync_weight`).
+- Added CLI/eval/checkpoint plumbing:
+  - `train_discriminative.py`: `--collaborative-global-offset-weight`, `--kl-sync-weight`.
+  - `evaluate.py` now reloads these checkpoint fields.
+- Added instrumentation:
+  - train logs now include `kl_sync=...`.
+  - per-block diagnostics include collaborative offsets (`co+`, `co-`), and history stores per-block collab offsets + KL-sync loss.
+
+### Entry 31
+- Added `sweep_ffdisc_collab_grid.py` for systematic D1/D2 sweeps (coarse+refine, multi-seed), fixed base aux at the current best combined setting:
+  - `mode=combined`, `aux=0.05`, `nonfinal_aux=0.25`, `final_aux=1.0`.
+- Full run:
+  - `coverage_collab_20260303_095101.json` (+ CSV summaries), coarse seeds `{42,43}`, refine seeds `{42,43,44}`.
+- Main result: **best refined config is still no collaboration terms**:
+  - `collab=0.0`, `kl=0.0`: test goodness exact `0.5833`, test logit exact `0.2167`, balanced `0.4000`.
+- Best non-zero setting:
+  - `collab=0.1`, `kl=0.0`: test goodness exact `0.4833`, test logit exact `0.2500`, balanced `0.3667`.
+- KL sync settings were consistently harmful to goodness in this regime:
+  - e.g. `collab=0.0`, `kl=0.05`: goodness `0.3000`, logit `0.1667`, balanced `0.2333`.
+  - e.g. `collab=0.0`, `kl=0.2`: goodness `0.0833`, logit `0.1167`, balanced `0.1000`.
+
+### Entry 32
+- Explicit D1+D2 probe to avoid missing interactions:
+  - `collab=0.2`, `kl=0.05`, seeds `{42,43,44}`, `steps=2000`.
+  - Output: `coverage_collab_probe_c02k005_20260303_102209.json`.
+- Result:
+  - mean test goodness exact `0.3833`
+  - mean test logit exact `0.1167`
+  - balanced `0.2500`
+- Conclusion: at current architecture/objective scale, D1+D2 does **not** outperform the no-collaboration best combined configuration.

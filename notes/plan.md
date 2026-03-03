@@ -250,7 +250,7 @@ The build order naturally creates ablations. Each step adds one component; diagn
 - **E quality depends on block 0** — if block 0's loss signal is weak, E could drift into a subspace not useful for deeper blocks (SimSiam analogy suggests this works, but not guaranteed)
 - **DeeperForward uses ReLU, we use GELU** — departure from paper, but POC confirms GELU works
 
-## Implementation Status (2026-03-02)
+## Implementation Status (2026-03-03)
 
 ### Completed and validated
 - Step 1 (`data.py`): tokenization, datasets, negative sampling, split diagnostics.
@@ -260,6 +260,10 @@ The build order naturally creates ablations. Each step adds one component; diagn
 - Step 5 (`ff_trainer.py`, `train_discriminative.py`): discriminative FF loop implemented with per-block diagnostics and checkpointing.
 - Step 6 (`ff_trainer.py`, `train_autoregressive.py`): AR FF loop implemented with candidate-token loss and checkpointing.
 - Step 7 (`evaluate.py`, `utils.py`): cross-model eval, plotting, checkpoint loading, and summary export.
+- Step 8 (`ff_trainer.py`, `train_discriminative.py`): collaborative FF variants implemented and ablated:
+  - D1 two-phase collaborative global-offset goodness (`collaborative_global_offset_weight`)
+  - D2 KL sync from final block to non-final blocks (`kl_sync_weight`)
+  - Result on 1-digit `coverage_s42`: these variants did not beat the best no-collaboration combined setting.
 
 ### Added beyond original plan for efficiency/debugging
 - Coverage-preserving split to avoid train/test token-support pathologies.
@@ -270,13 +274,17 @@ The build order naturally creates ablations. Each step adds one component; diagn
   - optional FF goodness-eval skip for large candidate spaces
   - optional discriminative rank diagnostics toggle
   - throughput logs (`steps_per_sec`) and eval set sizes
+  - per-step KL-sync loss logging and per-block collaborative offset diagnostics
+- Added FF-discriminative optimization knobs and sweep infra:
+  - inter-block normalization between detached blocks
+  - optional per-block predictive aux supervision
+  - weighted goodness aggregation with optional fitted block weights
+  - grid drivers for aux-scale and D1/D2 collaboration sweeps
 - Research progress log at `notes/research_notebook.md`.
 
 ### Still open / not yet implemented
-- Step 8 collaborative FF variants (two-phase collaboration, KL sync) are not implemented.
 - Phase 4 ablation `E.detach?` off (`C1`) is not yet run.
 - Goodness-based FF inference does not yet scale cleanly to very large answer spaces; large-digit experiments currently focus on logit inference.
-- Add DeeperForward-style inter-block signal decoupling/normalization so later blocks cannot over-rely on upstream magnitude shortcuts.
 
 ### Current diagnosis from recent ablations
 - FF-AR passes tiny-set memorization gates (1-digit and 2-digit tiny random splits), so the core pipeline can fit.
