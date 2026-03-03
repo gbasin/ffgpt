@@ -282,3 +282,28 @@
   - We are **not** yet in a globally “sane by default” regime for the new knobs.
   - Aux scale is a critical stability parameter; high defaults over-prioritize predictive aux and can destroy goodness ranking.
   - Lower aux improves balance and avoids catastrophic collapse, but still does not beat the original goodness baseline (`0.40`) on this split.
+
+### Entry 29
+- Added reproducible sweep tool: `sweep_ffdisc_aux_grid.py`.
+  - Coarse stage: modes `{perblockaux, combined}`, grid over `aux_weight x nonfinal_aux_weight`, seeds `{42,43}`, steps `1000`.
+  - Refine stage: top-4 coarse configs, seeds `{42,43,44}`, steps `2000`.
+  - Outputs saved to `checkpoints/sweeps/coverage_auxgrid_20260303_085152.{json,csv}`.
+- Refine top results (mean over seeds 42/43/44):
+  - **combined, aux=0.05, nonfinal=0.25**:
+    - test goodness exact `0.5833`
+    - test logit exact `0.2167`
+    - balanced score `0.4000`
+  - **perblockaux, aux=0.05, nonfinal=0.25**:
+    - test goodness exact `0.5500`
+    - test logit exact `0.2333`
+    - balanced score `0.3917`
+  - **perblockaux, aux=0.1, nonfinal=0.1**:
+    - test goodness exact `0.4333`
+    - test logit exact `0.2833`
+    - balanced score `0.3583`
+- Multi-seed default baseline (same setup, seeds 42/43/44):
+  - mean test goodness exact `0.3333`
+  - mean test logit exact `0.1333`
+- Takeaway:
+  - Earlier ad hoc tuned point (`aux=0.25, nonfinal=0.25`) was not near peak.
+  - Best region is lower aux scale (`~0.05-0.1`) with moderate nonfinal weight (`~0.1-0.25`).
