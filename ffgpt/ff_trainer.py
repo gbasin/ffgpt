@@ -1430,8 +1430,9 @@ class FFAutoregressiveTrainer:
             input_ids = torch.tensor([context], dtype=torch.long, device=self.device)
             pad_mask = input_ids != self.vocab.pad_id
             block_outputs, _ = self.model(input_ids, pad_mask=pad_mask, causal=True, detach_between_blocks=True)
-            hidden = block_outputs[-1][0, -1]
-            logits = torch.matmul(hidden, self.model.embedding_weight.detach().T)
+            final_block_idx = len(block_outputs) - 1
+            hidden = block_outputs[final_block_idx][:, -1, :]
+            logits = self._project_block_logits(final_block_idx, hidden)[0]
             next_token = int(torch.argmax(logits).item())
             generated.append(next_token)
             context.append(next_token)

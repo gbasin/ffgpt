@@ -410,3 +410,16 @@
 - Important implementation mismatch found:
   - In FF-AR `predict_with_logits`, inference always projects with `embedding_weight.detach()` and does not use `_project_block_logits`.
   - Therefore, if `use_per_block_output_heads=True`, eval-time decode does not use trained per-block heads, which can invalidate those ablation conclusions.
+
+### Entry 38
+- Fixed FF-AR inference mismatch for per-block output heads:
+  - Updated `FFAutoregressiveTrainer.predict_with_logits` to route final-block decode through `_project_block_logits(final_block_idx, hidden)` instead of always using `embedding_weight.detach()`.
+  - This aligns eval-time decode with training-time projection choice:
+    - if `use_per_block_output_heads=True`: use learned per-block head,
+    - else: use embedding projection with `output_embedding_detached` policy.
+- Added a targeted regression sanity probe:
+  - monkey-patched `_project_block_logits` with a sentinel exception and called `predict_with_logits`;
+  - observed expected sentinel trigger (`PASS`), confirming decode now executes through `_project_block_logits`.
+- Impact:
+  - Previous FF-AR ablations using `use_per_block_output_heads=True` were partially invalid because decode ignored those heads.
+  - Re-runs are required for apples-to-apples comparison of output-head ablations.
