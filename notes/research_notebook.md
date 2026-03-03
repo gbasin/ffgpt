@@ -227,3 +227,11 @@
   - More data diversity (10x `3-digit` samples) did not improve FF-disc at this budget.
   - More exposures (10x steps on 2-digit) mostly increased train fit with negligible test gains.
   - This is consistent with objective/credit-assignment limitations rather than simple undertraining.
+
+### Entry 25
+- Implemented requested ablation stack for FF-discriminative:
+  1. **Inter-block decoupling/normalization** (`inter_block_norm`: `none|layernorm|rmsnorm|l2`, with `inter_block_norm_eps`) applied between blocks in `FFTransformer.forward`.
+  2. **Per-block predictive supervision** via optional per-block logit aux CE (`use_per_block_logit_aux`) with final/non-final block weighting knobs.
+  3. **Non-equal block aggregation at inference** through `goodness_aggregation=weighted_sum`, optional manual `goodness_block_weights`, and optional eval-time fitting (`fit_goodness_block_weights`) on train-eval subset.
+- Added checkpoint/eval plumbing so these settings serialize and reload correctly.
+- Smoke-tested combined path (`layernorm + per-block aux + weighted_sum + fit weights`) with `steps=20` on `coverage_s42`; run executed end-to-end and produced checkpoints.

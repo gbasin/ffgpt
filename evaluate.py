@@ -217,6 +217,18 @@ def main() -> None:
         enable_goodness_eval=disc_ckpt.get("enable_goodness_eval", True),
         enable_logit_rank_diagnostics=disc_ckpt.get("enable_logit_rank_diagnostics", False),
         logit_rank_eval_max_candidates=disc_ckpt.get("logit_rank_eval_max_candidates", 512),
+        near_miss_start_step=disc_ckpt.get("near_miss_start_step"),
+        near_miss_offsets=tuple(disc_ckpt.get("near_miss_offsets", (1,))),
+        inter_block_norm=disc_ckpt.get("inter_block_norm", "none"),
+        inter_block_norm_eps=disc_ckpt.get("inter_block_norm_eps", 1e-5),
+        use_per_block_logit_aux=disc_ckpt.get("use_per_block_logit_aux", False),
+        final_block_logit_aux_weight=disc_ckpt.get("final_block_logit_aux_weight", 1.0),
+        nonfinal_block_logit_aux_weight=disc_ckpt.get("nonfinal_block_logit_aux_weight", 1.0),
+        goodness_aggregation=disc_ckpt.get("goodness_aggregation", "uniform_sum"),
+        goodness_block_weights=disc_ckpt.get("goodness_block_weights"),
+        fit_goodness_block_weights=disc_ckpt.get("fit_goodness_block_weights", False),
+        layerwise_train_single_block=disc_ckpt.get("layerwise_train_single_block", False),
+        layerwise_phase_steps=disc_ckpt.get("layerwise_phase_steps"),
     )
     ar_trainer = FFAutoregressiveTrainer(
         model=ar_model,

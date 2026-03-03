@@ -50,6 +50,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mlp-hidden", type=int, default=256)
     parser.add_argument("--threshold-momentum", type=float, default=0.9)
     parser.add_argument("--logit-aux-weight", type=float, default=1.0)
+    parser.add_argument("--use-per-block-logit-aux", action="store_true")
+    parser.add_argument("--final-block-logit-aux-weight", type=float, default=1.0)
+    parser.add_argument("--nonfinal-block-logit-aux-weight", type=float, default=1.0)
+    parser.add_argument("--inter-block-norm", type=str, default="none", choices=["none", "layernorm", "rmsnorm", "l2"])
+    parser.add_argument("--inter-block-norm-eps", type=float, default=1e-5)
+    parser.add_argument(
+        "--goodness-aggregation",
+        type=str,
+        default="uniform_sum",
+        choices=["uniform_sum", "weighted_sum"],
+    )
+    parser.add_argument(
+        "--goodness-block-weights",
+        type=str,
+        default=None,
+        help="Comma-separated per-block goodness weights for weighted_sum aggregation.",
+    )
+    parser.add_argument(
+        "--fit-goodness-block-weights",
+        action="store_true",
+        help="Fit goodness block weights on eval-train subset before goodness evaluation.",
+    )
     parser.add_argument("--max-full-candidate-answers", type=int, default=2048)
     parser.add_argument("--diagnose-logits", action="store_true")
     parser.add_argument("--diagnose-top-k", type=int, default=5)
@@ -98,6 +120,13 @@ def main() -> None:
             raise ValueError("--layerwise-phase-steps was provided but no valid integers were parsed")
     if (layerwise_phase_steps is not None) and (not args.layerwise_train_single_block):
         raise ValueError("--layerwise-phase-steps requires --layerwise-train-single-block")
+    if args.fit_goodness_block_weights and args.goodness_aggregation != "weighted_sum":
+        raise ValueError("--fit-goodness-block-weights requires --goodness-aggregation weighted_sum")
+    goodness_block_weights = None
+    if args.goodness_block_weights is not None:
+        goodness_block_weights = [float(x.strip()) for x in args.goodness_block_weights.split(",") if x.strip()]
+        if not goodness_block_weights:
+            raise ValueError("--goodness-block-weights was provided but no valid values were parsed")
 
     vocab = Vocab()
     if args.operand_digits == 1 and args.samples == 0:
@@ -143,6 +172,12 @@ def main() -> None:
     if args.layerwise_train_single_block:
         phase_label = layerwise_phase_steps if layerwise_phase_steps is not None else "auto"
         print(f"[ablation] layerwise_train_single_block=on phase_steps={phase_label}")
+    if args.goodness_aggregation == "weighted_sum":
+        weights_label = goodness_block_weights if goodness_block_weights is not None else "auto(ones or fitted)"
+        print(
+            "[ablation] goodness_aggregation=weighted_sum "
+            f"weights={weights_label} fit_weights={args.fit_goodness_block_weights}"
+        )
     max_answer_tokens = args.operand_digits + 1
     max_answer_value = max_sum_for_operand_digits(args.operand_digits)
     max_seq_len = max_seq_len_for_operand_digits(args.operand_digits)
@@ -181,6 +216,14 @@ def main() -> None:
         checkpoint_dir=args.checkpoint_dir,
         threshold_momentum=args.threshold_momentum,
         logit_aux_weight=args.logit_aux_weight,
+        use_per_block_logit_aux=args.use_per_block_logit_aux,
+        final_block_logit_aux_weight=args.final_block_logit_aux_weight,
+        nonfinal_block_logit_aux_weight=args.nonfinal_block_logit_aux_weight,
+        inter_block_norm=args.inter_block_norm,
+        inter_block_norm_eps=args.inter_block_norm_eps,
+        goodness_aggregation=args.goodness_aggregation,
+        goodness_block_weights=goodness_block_weights,
+        fit_goodness_block_weights=args.fit_goodness_block_weights,
         sequence_length=max_seq_len,
         max_answer_tokens=max_answer_tokens,
         max_answer_value=max_answer_value,

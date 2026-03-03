@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 import random
 import time
@@ -70,6 +71,14 @@ class FFDiscriminativeTrainer:
         logit_rank_eval_max_candidates: int = 512,
         near_miss_start_step: int | None = None,
         near_miss_offsets: tuple[int, ...] = (1,),
+        inter_block_norm: str = "none",
+        inter_block_norm_eps: float = 1e-5,
+        use_per_block_logit_aux: bool = False,
+        final_block_logit_aux_weight: float = 1.0,
+        nonfinal_block_logit_aux_weight: float = 1.0,
+        goodness_aggregation: str = "uniform_sum",
+        goodness_block_weights: list[float] | None = None,
+        fit_goodness_block_weights: bool = False,
         layerwise_train_single_block: bool = False,
         layerwise_phase_steps: list[int] | None = None,
         device: str = "cpu",
@@ -90,6 +99,31 @@ class FFDiscriminativeTrainer:
         self.sequence_length = int(sequence_length) if sequence_length is not None else int(self.model.config.max_seq_len)
         self.near_miss_start_step = near_miss_start_step
         self.near_miss_offsets = tuple(int(x) for x in near_miss_offsets)
+        self.inter_block_norm = str(inter_block_norm).lower()
+        self.inter_block_norm_eps = float(inter_block_norm_eps)
+        if self.inter_block_norm not in {"none", "layernorm", "rmsnorm", "l2"}:
+            raise ValueError(
+                f"inter_block_norm must be one of ['none', 'layernorm', 'rmsnorm', 'l2'], got {inter_block_norm}"
+            )
+        if self.inter_block_norm_eps <= 0.0:
+            raise ValueError(f"inter_block_norm_eps must be > 0, got {inter_block_norm_eps}")
+        self.use_per_block_logit_aux = bool(use_per_block_logit_aux)
+        self.final_block_logit_aux_weight = float(final_block_logit_aux_weight)
+        self.nonfinal_block_logit_aux_weight = float(nonfinal_block_logit_aux_weight)
+        if self.final_block_logit_aux_weight <= 0.0 or self.nonfinal_block_logit_aux_weight < 0.0:
+            raise ValueError(
+                "final_block_logit_aux_weight must be > 0 and nonfinal_block_logit_aux_weight must be >= 0. "
+                f"Got {self.final_block_logit_aux_weight}, {self.nonfinal_block_logit_aux_weight}"
+            )
+        self.goodness_aggregation = str(goodness_aggregation).lower()
+        if self.goodness_aggregation not in {"uniform_sum", "weighted_sum"}:
+            raise ValueError(
+                f"goodness_aggregation must be one of ['uniform_sum', 'weighted_sum'], got {goodness_aggregation}"
+            )
+        self.fit_goodness_block_weights = bool(fit_goodness_block_weights)
+        if self.fit_goodness_block_weights and self.goodness_aggregation != "weighted_sum":
+            raise ValueError("fit_goodness_block_weights=True requires goodness_aggregation='weighted_sum'")
+        self.goodness_block_weights_raw = None if goodness_block_weights is None else [float(x) for x in goodness_block_weights]
         self.layerwise_train_single_block = bool(layerwise_train_single_block)
         self.device = torch.device(device)
         self.seed = seed
@@ -143,6 +177,14 @@ class FFDiscriminativeTrainer:
         for phase_steps in self.layerwise_phase_steps:
             running += phase_steps
             self.layerwise_phase_boundaries.append(running)
+        if self.goodness_block_weights_raw is None:
+            self.goodness_block_weights = [1.0 for _ in range(n_blocks)]
+        else:
+            if len(self.goodness_block_weights_raw) != n_blocks:
+                raise ValueError(
+                    f"goodness_block_weights length must match n_blocks ({n_blocks}), got {len(self.goodness_block_weights_raw)}"
+                )
+            self.goodness_block_weights = list(self.goodness_block_weights_raw)
         self.thresholds: list[torch.Tensor | None] = [None for _ in range(n_blocks)]
         self.collapse_counts: list[int] = [0 for _ in range(n_blocks)]
         self.loss_increase_streak = 0
@@ -165,6 +207,7 @@ class FFDiscriminativeTrainer:
             "eval_train_size": [],
             "eval_test_size": [],
             "active_block": [],
+            "goodness_block_weights": [],
             "logit_aux_loss": [],
             "block_g_pos": [[] for _ in range(n_blocks)],
             "block_g_neg": [[] for _ in range(n_blocks)],
@@ -224,6 +267,72 @@ class FFDiscriminativeTrainer:
         while phase_idx < (len(self.layerwise_phase_boundaries) - 1) and step > self.layerwise_phase_boundaries[phase_idx]:
             phase_idx += 1
         return [phase_idx]
+
+    def _logit_aux_block_weight(self, block_idx: int, n_blocks: int) -> float:
+        if block_idx == (n_blocks - 1):
+            return self.final_block_logit_aux_weight
+        return self.nonfinal_block_logit_aux_weight
+
+    def _aggregate_goodness_scores(self, stacked: torch.Tensor) -> torch.Tensor:
+        if self.goodness_aggregation == "uniform_sum":
+            return stacked.sum(dim=0)
+
+        weights = torch.tensor(self.goodness_block_weights, dtype=stacked.dtype, device=stacked.device).unsqueeze(1)
+        return (stacked * weights).sum(dim=0)
+
+    @torch.no_grad()
+    def _fit_goodness_weights(self, problems: list[Problem], causal: bool = False) -> list[float]:
+        n_blocks = len(self.model.blocks)
+        if n_blocks == 0:
+            return []
+        if not problems:
+            return list(self.goodness_block_weights)
+        if n_blocks == 1:
+            self.goodness_block_weights = [1.0]
+            return list(self.goodness_block_weights)
+
+        cached_scores: list[tuple[torch.Tensor, int]] = []
+        for problem in problems:
+            _, stacked = self._score_candidates_goodness(problem.a, problem.b, causal=causal)
+            target_idx = self.answer_to_candidate_index.get(int(problem.answer))
+            if target_idx is None:
+                continue
+            cached_scores.append((stacked.detach(), int(target_idx)))
+        if not cached_scores:
+            return list(self.goodness_block_weights)
+
+        grid = (-1.0, -0.5, -0.25, 0.0, 0.25, 0.5, 1.0, 2.0)
+        max_combos = 4096
+        total_combos = len(grid) ** n_blocks
+        if total_combos <= max_combos:
+            combos = list(product(grid, repeat=n_blocks))
+        else:
+            combos = [
+                tuple(self.rng.choice(grid) for _ in range(n_blocks))
+                for _ in range(max_combos)
+            ]
+
+        best_weights = tuple(self.goodness_block_weights)
+        best_acc = float("-inf")
+        best_l1 = float("inf")
+        for weights in combos:
+            correct = 0
+            weights_t = None
+            for stacked, target_idx in cached_scores:
+                if weights_t is None:
+                    weights_t = torch.tensor(weights, dtype=stacked.dtype, device=stacked.device).unsqueeze(1)
+                scores = (stacked * weights_t).sum(dim=0)
+                pred_idx = int(torch.argmax(scores).item())
+                correct += int(pred_idx == target_idx)
+            acc = float(correct / max(len(cached_scores), 1))
+            l1 = float(sum(abs(w) for w in weights))
+            if (acc > best_acc + 1e-12) or (abs(acc - best_acc) <= 1e-12 and l1 < best_l1):
+                best_acc = acc
+                best_l1 = l1
+                best_weights = weights
+
+        self.goodness_block_weights = [float(w) for w in best_weights]
+        return list(self.goodness_block_weights)
 
     def _negative_strategy_for_step(self, step: int) -> str:
         if self.near_miss_start_step is not None and step >= self.near_miss_start_step:
@@ -307,7 +416,14 @@ class FFDiscriminativeTrainer:
             device=self.device,
         )
         pad_mask = token_batch != self.vocab.pad_id
-        _, acts = self.model(token_batch, pad_mask=pad_mask, causal=causal, detach_between_blocks=True)
+        _, acts = self.model(
+            token_batch,
+            pad_mask=pad_mask,
+            causal=causal,
+            detach_between_blocks=True,
+            inter_block_norm=self.inter_block_norm,
+            inter_block_norm_eps=self.inter_block_norm_eps,
+        )
 
         block_scores: list[torch.Tensor] = []
         for block_acts in acts:
@@ -315,7 +431,7 @@ class FFDiscriminativeTrainer:
             block_scores.append(g)
 
         stacked = torch.stack(block_scores, dim=0)
-        total = stacked.sum(dim=0)
+        total = self._aggregate_goodness_scores(stacked)
         return total, stacked
 
     @torch.no_grad()
@@ -332,7 +448,14 @@ class FFDiscriminativeTrainer:
             for target_token in answer_tokens:
                 input_ids = torch.tensor([context], dtype=torch.long, device=self.device)
                 pad_mask = input_ids != self.vocab.pad_id
-                block_outputs, _ = self.model(input_ids, pad_mask=pad_mask, causal=True, detach_between_blocks=True)
+                block_outputs, _ = self.model(
+                    input_ids,
+                    pad_mask=pad_mask,
+                    causal=True,
+                    detach_between_blocks=True,
+                    inter_block_norm=self.inter_block_norm,
+                    inter_block_norm_eps=self.inter_block_norm_eps,
+                )
                 hidden = block_outputs[-1][0, -1]
                 logits = torch.matmul(hidden, self.model.embedding_weight.detach().T)
                 log_probs = F.log_softmax(logits, dim=-1)
@@ -361,7 +484,14 @@ class FFDiscriminativeTrainer:
         for _ in range(self.max_answer_tokens):
             input_ids = torch.tensor([context], dtype=torch.long, device=self.device)
             pad_mask = input_ids != self.vocab.pad_id
-            block_outputs, _ = self.model(input_ids, pad_mask=pad_mask, causal=True, detach_between_blocks=True)
+            block_outputs, _ = self.model(
+                input_ids,
+                pad_mask=pad_mask,
+                causal=True,
+                detach_between_blocks=True,
+                inter_block_norm=self.inter_block_norm,
+                inter_block_norm_eps=self.inter_block_norm_eps,
+            )
             hidden = block_outputs[-1][0, -1]
             logits = torch.matmul(hidden, self.model.embedding_weight.detach().T)
             next_token = int(torch.argmax(logits).item())
@@ -539,11 +669,19 @@ class FFDiscriminativeTrainer:
             "run_tag": self.run_tag,
             "checkpoint_prefix": self.checkpoint_prefix,
             "logit_aux_weight": self.logit_aux_weight,
+            "use_per_block_logit_aux": self.use_per_block_logit_aux,
+            "final_block_logit_aux_weight": self.final_block_logit_aux_weight,
+            "nonfinal_block_logit_aux_weight": self.nonfinal_block_logit_aux_weight,
             "sequence_length": self.sequence_length,
             "max_answer_tokens": self.max_answer_tokens,
             "max_answer_value": self.max_answer_value,
             "candidate_answers": self.candidate_answers,
             "max_full_candidate_answers": self.max_full_candidate_answers,
+            "inter_block_norm": self.inter_block_norm,
+            "inter_block_norm_eps": self.inter_block_norm_eps,
+            "goodness_aggregation": self.goodness_aggregation,
+            "goodness_block_weights": self.goodness_block_weights,
+            "fit_goodness_block_weights": self.fit_goodness_block_weights,
             "eval_every": self.eval_every,
             "eval_train_max_samples": self.eval_train_max_samples,
             "eval_test_max_samples": self.eval_test_max_samples,
@@ -569,8 +707,22 @@ class FFDiscriminativeTrainer:
             pos_mask = pos_tokens != self.vocab.pad_id
             neg_mask = neg_tokens != self.vocab.pad_id
 
-            _, pos_acts = self.model(pos_tokens, pad_mask=pos_mask, causal=False, detach_between_blocks=True)
-            _, neg_acts = self.model(neg_tokens, pad_mask=neg_mask, causal=False, detach_between_blocks=True)
+            _, pos_acts = self.model(
+                pos_tokens,
+                pad_mask=pos_mask,
+                causal=False,
+                detach_between_blocks=True,
+                inter_block_norm=self.inter_block_norm,
+                inter_block_norm_eps=self.inter_block_norm_eps,
+            )
+            _, neg_acts = self.model(
+                neg_tokens,
+                pad_mask=neg_mask,
+                causal=False,
+                detach_between_blocks=True,
+                inter_block_norm=self.inter_block_norm,
+                inter_block_norm_eps=self.inter_block_norm_eps,
+            )
 
             block_losses: list[torch.Tensor] = []
             block_stats: list[dict[str, float]] = []
@@ -616,10 +768,7 @@ class FFDiscriminativeTrainer:
             active_block_set = set(active_blocks)
             ff_loss_total = torch.stack([block_losses[idx] for idx in active_blocks], dim=0).sum()
             logit_aux_loss = torch.tensor(0.0, device=self.device)
-            enable_logit_aux = self.logit_aux_weight > 0.0 and (
-                (not self.layerwise_train_single_block) or ((len(self.model.blocks) - 1) in active_block_set)
-            )
-            if enable_logit_aux:
+            if self.logit_aux_weight > 0.0:
                 x_pos = pos_tokens[:, :-1]
                 y_pos = pos_tokens[:, 1:]
                 x_pos_mask = x_pos != self.vocab.pad_id
@@ -628,12 +777,34 @@ class FFDiscriminativeTrainer:
                     pad_mask=x_pos_mask,
                     causal=True,
                     detach_between_blocks=True,
+                    inter_block_norm=self.inter_block_norm,
+                    inter_block_norm_eps=self.inter_block_norm_eps,
                 )
-                logit_aux_loss = self._answer_token_ce_loss(
-                    block_hidden=pos_block_outputs_causal[-1],
-                    x_tokens=x_pos,
-                    y_tokens=y_pos,
-                )
+                n_blocks = len(pos_block_outputs_causal)
+                if self.use_per_block_logit_aux:
+                    aux_terms: list[torch.Tensor] = []
+                    for block_idx, block_hidden in enumerate(pos_block_outputs_causal):
+                        if self.layerwise_train_single_block and block_idx not in active_block_set:
+                            continue
+                        weight = self._logit_aux_block_weight(block_idx, n_blocks)
+                        if weight <= 0.0:
+                            continue
+                        ce_k = self._answer_token_ce_loss(
+                            block_hidden=block_hidden,
+                            x_tokens=x_pos,
+                            y_tokens=y_pos,
+                        )
+                        aux_terms.append(ce_k * weight)
+                    if aux_terms:
+                        logit_aux_loss = torch.stack(aux_terms, dim=0).sum()
+                else:
+                    enable_final_block_aux = (not self.layerwise_train_single_block) or ((n_blocks - 1) in active_block_set)
+                    if enable_final_block_aux:
+                        logit_aux_loss = self._answer_token_ce_loss(
+                            block_hidden=pos_block_outputs_causal[-1],
+                            x_tokens=x_pos,
+                            y_tokens=y_pos,
+                        )
 
             total_loss = ff_loss_total + (self.logit_aux_weight * logit_aux_loss)
 
@@ -715,6 +886,10 @@ class FFDiscriminativeTrainer:
                 else:
                     train_eval = self._sample_eval_subset(self.train_problems, self.eval_train_max_samples)
                     test_eval = self._sample_eval_subset(self.test_problems, self.eval_test_max_samples)
+                    if self.enable_goodness_eval and self.fit_goodness_block_weights:
+                        fitted = self._fit_goodness_weights(train_eval, causal=False)
+                        fitted_msg = ",".join(f"{w:.2f}" for w in fitted)
+                        print(f"[ff-disc step {step}] fitted_goodness_weights=[{fitted_msg}]")
 
                     if self.enable_goodness_eval:
                         train_good = self.evaluate_goodness(train_eval, causal=False)
@@ -773,12 +948,16 @@ class FFDiscriminativeTrainer:
                     self.history["eval_train_size"].append(len(train_eval))
                     self.history["eval_test_size"].append(len(test_eval))
                     self.history["active_block"].append(active_blocks[0] if self.layerwise_train_single_block else -1)
+                    self.history["goodness_block_weights"].append(list(self.goodness_block_weights))
+
+                    weights_msg = ",".join(f"{w:.2f}" for w in self.goodness_block_weights)
 
                     print(
                         f"[ff-disc step {step}] loss={total_loss.item():.4f} "
                         f"ff_loss={ff_loss_total.item():.4f} "
                         f"logit_aux={logit_aux_loss.item():.4f} "
                         f"active_blocks=[{active_blocks_msg}] "
+                        f"good_w=[{weights_msg}] "
                         f"steps_per_sec={steps_per_sec:.2f} "
                         f"train_logit_exact={train_log.sequence_exact_match:.3f} "
                         f"test_logit_exact={test_log.sequence_exact_match:.3f} "
@@ -797,6 +976,8 @@ class FFDiscriminativeTrainer:
 
         final_train_eval = self._sample_eval_subset(self.train_problems, self.eval_train_max_samples)
         final_test_eval = self._sample_eval_subset(self.test_problems, self.eval_test_max_samples)
+        if self.enable_goodness_eval and self.fit_goodness_block_weights:
+            self._fit_goodness_weights(final_train_eval, causal=False)
         if self.enable_goodness_eval:
             final_train_good = self.evaluate_goodness(final_train_eval, causal=False)
             final_test_good = self.evaluate_goodness(final_test_eval, causal=False)

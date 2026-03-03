@@ -5,6 +5,7 @@ import math
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 
 def causal_mask(seq_len: int, device: torch.device | None = None) -> torch.Tensor:
@@ -146,9 +147,19 @@ class FFTransformer(nn.Module):
         pad_mask: torch.Tensor | None = None,
         causal: bool = False,
         detach_between_blocks: bool = True,
+        inter_block_norm: str = "none",
+        inter_block_norm_eps: float = 1e-5,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         if pad_mask is None:
             pad_mask = torch.ones_like(tokens, dtype=torch.bool)
+
+        norm_mode = inter_block_norm.lower()
+        if norm_mode not in {"none", "layernorm", "rmsnorm", "l2"}:
+            raise ValueError(
+                f"inter_block_norm must be one of ['none', 'layernorm', 'rmsnorm', 'l2'], got {inter_block_norm}"
+            )
+        if inter_block_norm_eps <= 0.0:
+            raise ValueError(f"inter_block_norm_eps must be > 0, got {inter_block_norm_eps}")
 
         x = self.embed(tokens)
         block_outputs: list[torch.Tensor] = []
@@ -157,6 +168,13 @@ class FFTransformer(nn.Module):
         for block_idx, block in enumerate(self.blocks):
             if detach_between_blocks and block_idx > 0:
                 x = x.detach()
+            if block_idx > 0 and norm_mode != "none":
+                if norm_mode == "layernorm":
+                    x = F.layer_norm(x, (x.shape[-1],), eps=inter_block_norm_eps)
+                elif norm_mode == "rmsnorm":
+                    x = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + inter_block_norm_eps)
+                else:
+                    x = x / x.norm(dim=-1, keepdim=True).clamp(min=inter_block_norm_eps)
             x, acts = block(x, pad_mask=pad_mask, causal=causal)
             block_outputs.append(x)
             goodness_activations.append(acts)
