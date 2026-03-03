@@ -53,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-per-block-logit-aux", action="store_true")
     parser.add_argument("--final-block-logit-aux-weight", type=float, default=1.0)
     parser.add_argument("--nonfinal-block-logit-aux-weight", type=float, default=1.0)
+    parser.add_argument("--collaborative-global-offset-weight", type=float, default=0.0)
+    parser.add_argument("--kl-sync-weight", type=float, default=0.0)
     parser.add_argument("--inter-block-norm", type=str, default="none", choices=["none", "layernorm", "rmsnorm", "l2"])
     parser.add_argument("--inter-block-norm-eps", type=float, default=1e-5)
     parser.add_argument(
@@ -178,6 +180,10 @@ def main() -> None:
             "[ablation] goodness_aggregation=weighted_sum "
             f"weights={weights_label} fit_weights={args.fit_goodness_block_weights}"
         )
+    if args.collaborative_global_offset_weight > 0.0:
+        print(f"[ablation] collaborative_global_offset_weight={args.collaborative_global_offset_weight}")
+    if args.kl_sync_weight > 0.0:
+        print(f"[ablation] kl_sync_weight={args.kl_sync_weight}")
     max_answer_tokens = args.operand_digits + 1
     max_answer_value = max_sum_for_operand_digits(args.operand_digits)
     max_seq_len = max_seq_len_for_operand_digits(args.operand_digits)
@@ -219,6 +225,8 @@ def main() -> None:
         use_per_block_logit_aux=args.use_per_block_logit_aux,
         final_block_logit_aux_weight=args.final_block_logit_aux_weight,
         nonfinal_block_logit_aux_weight=args.nonfinal_block_logit_aux_weight,
+        collaborative_global_offset_weight=args.collaborative_global_offset_weight,
+        kl_sync_weight=args.kl_sync_weight,
         inter_block_norm=args.inter_block_norm,
         inter_block_norm_eps=args.inter_block_norm_eps,
         goodness_aggregation=args.goodness_aggregation,

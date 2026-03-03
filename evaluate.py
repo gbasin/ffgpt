@@ -224,6 +224,8 @@ def main() -> None:
         use_per_block_logit_aux=disc_ckpt.get("use_per_block_logit_aux", False),
         final_block_logit_aux_weight=disc_ckpt.get("final_block_logit_aux_weight", 1.0),
         nonfinal_block_logit_aux_weight=disc_ckpt.get("nonfinal_block_logit_aux_weight", 1.0),
+        collaborative_global_offset_weight=disc_ckpt.get("collaborative_global_offset_weight", 0.0),
+        kl_sync_weight=disc_ckpt.get("kl_sync_weight", 0.0),
         goodness_aggregation=disc_ckpt.get("goodness_aggregation", "uniform_sum"),
         goodness_block_weights=disc_ckpt.get("goodness_block_weights"),
         fit_goodness_block_weights=disc_ckpt.get("fit_goodness_block_weights", False),

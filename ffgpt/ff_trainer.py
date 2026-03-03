@@ -76,6 +76,8 @@ class FFDiscriminativeTrainer:
         use_per_block_logit_aux: bool = False,
         final_block_logit_aux_weight: float = 1.0,
         nonfinal_block_logit_aux_weight: float = 1.0,
+        collaborative_global_offset_weight: float = 0.0,
+        kl_sync_weight: float = 0.0,
         goodness_aggregation: str = "uniform_sum",
         goodness_block_weights: list[float] | None = None,
         fit_goodness_block_weights: bool = False,
@@ -115,6 +117,15 @@ class FFDiscriminativeTrainer:
                 "final_block_logit_aux_weight must be > 0 and nonfinal_block_logit_aux_weight must be >= 0. "
                 f"Got {self.final_block_logit_aux_weight}, {self.nonfinal_block_logit_aux_weight}"
             )
+        self.collaborative_global_offset_weight = float(collaborative_global_offset_weight)
+        self.kl_sync_weight = float(kl_sync_weight)
+        if self.collaborative_global_offset_weight < 0.0:
+            raise ValueError(
+                "collaborative_global_offset_weight must be >= 0. "
+                f"Got {self.collaborative_global_offset_weight}"
+            )
+        if self.kl_sync_weight < 0.0:
+            raise ValueError(f"kl_sync_weight must be >= 0. Got {self.kl_sync_weight}")
         self.goodness_aggregation = str(goodness_aggregation).lower()
         if self.goodness_aggregation not in {"uniform_sum", "weighted_sum"}:
             raise ValueError(
@@ -209,12 +220,15 @@ class FFDiscriminativeTrainer:
             "active_block": [],
             "goodness_block_weights": [],
             "logit_aux_loss": [],
+            "kl_sync_loss": [],
             "block_g_pos": [[] for _ in range(n_blocks)],
             "block_g_neg": [[] for _ in range(n_blocks)],
             "block_threshold": [[] for _ in range(n_blocks)],
             "block_separation": [[] for _ in range(n_blocks)],
             "block_separation_ratio": [[] for _ in range(n_blocks)],
             "block_accuracy": [[] for _ in range(n_blocks)],
+            "block_collab_pos_offset": [[] for _ in range(n_blocks)],
+            "block_collab_neg_offset": [[] for _ in range(n_blocks)],
         }
 
     def _normalize_layerwise_phase_steps(
@@ -279,6 +293,13 @@ class FFDiscriminativeTrainer:
 
         weights = torch.tensor(self.goodness_block_weights, dtype=stacked.dtype, device=stacked.device).unsqueeze(1)
         return (stacked * weights).sum(dim=0)
+
+    def _collaborative_offsets(self, cached_goodness: list[torch.Tensor]) -> list[torch.Tensor]:
+        """For each block l, return sum of cached goodness from all blocks r != l."""
+        if not cached_goodness:
+            return []
+        total = torch.stack(cached_goodness, dim=0).sum(dim=0)
+        return [total - cached_goodness[idx] for idx in range(len(cached_goodness))]
 
     @torch.no_grad()
     def _fit_goodness_weights(self, problems: list[Problem], causal: bool = False) -> list[float]:
@@ -402,6 +423,39 @@ class FFDiscriminativeTrainer:
         flat_logits = torch.stack(selected_logits, dim=0)
         flat_targets = torch.stack(selected_targets, dim=0)
         return F.cross_entropy(flat_logits, flat_targets)
+
+    def _answer_token_kl_loss(
+        self,
+        student_hidden: torch.Tensor,
+        teacher_hidden: torch.Tensor,
+        x_tokens: torch.Tensor,
+    ) -> torch.Tensor:
+        """KL(teacher || student) on answer-generation positions only (after '=')."""
+        embedding = self.model.embedding_weight.detach()
+        student_logits = torch.matmul(student_hidden, embedding.T)
+        teacher_logits = torch.matmul(teacher_hidden.detach(), embedding.T)
+
+        selected_student: list[torch.Tensor] = []
+        selected_teacher: list[torch.Tensor] = []
+        batch_size, seq_len, _ = student_logits.shape
+
+        for batch_idx in range(batch_size):
+            eq_positions = (x_tokens[batch_idx] == self.vocab.equals_id).nonzero(as_tuple=False)
+            if eq_positions.numel() == 0:
+                continue
+            eq_pos = int(eq_positions[0].item())
+            for pos in range(eq_pos, seq_len):
+                selected_student.append(student_logits[batch_idx, pos])
+                selected_teacher.append(teacher_logits[batch_idx, pos])
+
+        if not selected_student:
+            return torch.tensor(0.0, device=self.device)
+
+        flat_student = torch.stack(selected_student, dim=0)
+        flat_teacher = torch.stack(selected_teacher, dim=0)
+        log_probs_student = F.log_softmax(flat_student, dim=-1)
+        probs_teacher = F.softmax(flat_teacher, dim=-1)
+        return F.kl_div(log_probs_student, probs_teacher, reduction="batchmean")
 
     def _score_candidates_goodness(
         self,
@@ -672,6 +726,8 @@ class FFDiscriminativeTrainer:
             "use_per_block_logit_aux": self.use_per_block_logit_aux,
             "final_block_logit_aux_weight": self.final_block_logit_aux_weight,
             "nonfinal_block_logit_aux_weight": self.nonfinal_block_logit_aux_weight,
+            "collaborative_global_offset_weight": self.collaborative_global_offset_weight,
+            "kl_sync_weight": self.kl_sync_weight,
             "sequence_length": self.sequence_length,
             "max_answer_tokens": self.max_answer_tokens,
             "max_answer_value": self.max_answer_value,
@@ -707,6 +763,35 @@ class FFDiscriminativeTrainer:
             pos_mask = pos_tokens != self.vocab.pad_id
             neg_mask = neg_tokens != self.vocab.pad_id
 
+            collaborative_offsets_pos: list[torch.Tensor] | None = None
+            collaborative_offsets_neg: list[torch.Tensor] | None = None
+            collaborative_enabled = self.collaborative_global_offset_weight > 0.0 and len(self.model.blocks) > 1
+            if collaborative_enabled:
+                # Two-phase collaborative training:
+                # 1) cache per-block goodness with no grad
+                # 2) apply other-block goodness as stop-grad offsets in local block losses
+                with torch.no_grad():
+                    _, pos_acts_cached = self.model(
+                        pos_tokens,
+                        pad_mask=pos_mask,
+                        causal=False,
+                        detach_between_blocks=True,
+                        inter_block_norm=self.inter_block_norm,
+                        inter_block_norm_eps=self.inter_block_norm_eps,
+                    )
+                    _, neg_acts_cached = self.model(
+                        neg_tokens,
+                        pad_mask=neg_mask,
+                        causal=False,
+                        detach_between_blocks=True,
+                        inter_block_norm=self.inter_block_norm,
+                        inter_block_norm_eps=self.inter_block_norm_eps,
+                    )
+                    cached_pos_goodness = [mean_goodness(block_acts, pos_mask) for block_acts in pos_acts_cached]
+                    cached_neg_goodness = [mean_goodness(block_acts, neg_mask) for block_acts in neg_acts_cached]
+                collaborative_offsets_pos = self._collaborative_offsets(cached_pos_goodness)
+                collaborative_offsets_neg = self._collaborative_offsets(cached_neg_goodness)
+
             _, pos_acts = self.model(
                 pos_tokens,
                 pad_mask=pos_mask,
@@ -728,8 +813,16 @@ class FFDiscriminativeTrainer:
             block_stats: list[dict[str, float]] = []
 
             for block_idx, (p_acts, n_acts) in enumerate(zip(pos_acts, neg_acts)):
-                g_pos = mean_goodness(p_acts, pos_mask)
-                g_neg = mean_goodness(n_acts, neg_mask)
+                g_pos_raw = mean_goodness(p_acts, pos_mask)
+                g_neg_raw = mean_goodness(n_acts, neg_mask)
+                collab_pos_offset = torch.zeros_like(g_pos_raw)
+                collab_neg_offset = torch.zeros_like(g_neg_raw)
+                if collaborative_offsets_pos is not None and collaborative_offsets_neg is not None:
+                    collab_pos_offset = collaborative_offsets_pos[block_idx]
+                    collab_neg_offset = collaborative_offsets_neg[block_idx]
+
+                g_pos = g_pos_raw + (self.collaborative_global_offset_weight * collab_pos_offset)
+                g_neg = g_neg_raw + (self.collaborative_global_offset_weight * collab_neg_offset)
 
                 self.thresholds[block_idx] = update_threshold_ema(
                     g_pos=g_pos,
@@ -743,11 +836,16 @@ class FFDiscriminativeTrainer:
                 loss_k = ff_loss_bce(g_pos, g_neg, threshold)
                 block_losses.append(loss_k)
 
-                g_pos_mean = float(g_pos.mean().item())
-                g_neg_mean = float(g_neg.mean().item())
+                g_pos_mean_raw = float(g_pos_raw.mean().item())
+                g_neg_mean_raw = float(g_neg_raw.mean().item())
+                g_pos_mean_eff = float(g_pos.mean().item())
+                g_neg_mean_eff = float(g_neg.mean().item())
+                collab_pos_offset_mean = float(collab_pos_offset.mean().item())
+                collab_neg_offset_mean = float(collab_neg_offset.mean().item())
                 threshold_value = float(threshold.item())
-                separation = g_pos_mean - g_neg_mean
-                separation_ratio = separation / (abs(g_neg_mean) + 1e-8)
+                separation = g_pos_mean_raw - g_neg_mean_raw
+                separation_ratio = separation / (abs(g_neg_mean_raw) + 1e-8)
+                separation_eff = g_pos_mean_eff - g_neg_mean_eff
                 block_accuracy = (
                     float((g_pos > threshold).float().mean().item())
                     + float((g_neg <= threshold).float().mean().item())
@@ -755,10 +853,15 @@ class FFDiscriminativeTrainer:
 
                 block_stats.append(
                     {
-                        "g_pos": g_pos_mean,
-                        "g_neg": g_neg_mean,
+                        "g_pos": g_pos_mean_raw,
+                        "g_neg": g_neg_mean_raw,
+                        "g_pos_eff": g_pos_mean_eff,
+                        "g_neg_eff": g_neg_mean_eff,
+                        "collab_pos_offset": collab_pos_offset_mean,
+                        "collab_neg_offset": collab_neg_offset_mean,
                         "threshold": threshold_value,
                         "separation": separation,
+                        "separation_eff": separation_eff,
                         "separation_ratio": separation_ratio,
                         "accuracy": block_accuracy,
                     }
@@ -768,7 +871,8 @@ class FFDiscriminativeTrainer:
             active_block_set = set(active_blocks)
             ff_loss_total = torch.stack([block_losses[idx] for idx in active_blocks], dim=0).sum()
             logit_aux_loss = torch.tensor(0.0, device=self.device)
-            if self.logit_aux_weight > 0.0:
+            kl_sync_loss = torch.tensor(0.0, device=self.device)
+            if self.logit_aux_weight > 0.0 or self.kl_sync_weight > 0.0:
                 x_pos = pos_tokens[:, :-1]
                 y_pos = pos_tokens[:, 1:]
                 x_pos_mask = x_pos != self.vocab.pad_id
@@ -781,32 +885,53 @@ class FFDiscriminativeTrainer:
                     inter_block_norm_eps=self.inter_block_norm_eps,
                 )
                 n_blocks = len(pos_block_outputs_causal)
-                if self.use_per_block_logit_aux:
-                    aux_terms: list[torch.Tensor] = []
-                    for block_idx, block_hidden in enumerate(pos_block_outputs_causal):
+                if self.logit_aux_weight > 0.0:
+                    if self.use_per_block_logit_aux:
+                        aux_terms: list[torch.Tensor] = []
+                        for block_idx, block_hidden in enumerate(pos_block_outputs_causal):
+                            if self.layerwise_train_single_block and block_idx not in active_block_set:
+                                continue
+                            weight = self._logit_aux_block_weight(block_idx, n_blocks)
+                            if weight <= 0.0:
+                                continue
+                            ce_k = self._answer_token_ce_loss(
+                                block_hidden=block_hidden,
+                                x_tokens=x_pos,
+                                y_tokens=y_pos,
+                            )
+                            aux_terms.append(ce_k * weight)
+                        if aux_terms:
+                            logit_aux_loss = torch.stack(aux_terms, dim=0).sum()
+                    else:
+                        enable_final_block_aux = (not self.layerwise_train_single_block) or ((n_blocks - 1) in active_block_set)
+                        if enable_final_block_aux:
+                            logit_aux_loss = self._answer_token_ce_loss(
+                                block_hidden=pos_block_outputs_causal[-1],
+                                x_tokens=x_pos,
+                                y_tokens=y_pos,
+                            )
+
+                if self.kl_sync_weight > 0.0 and n_blocks > 1:
+                    teacher_hidden = pos_block_outputs_causal[-1]
+                    kl_terms: list[torch.Tensor] = []
+                    for block_idx, student_hidden in enumerate(pos_block_outputs_causal[:-1]):
                         if self.layerwise_train_single_block and block_idx not in active_block_set:
                             continue
-                        weight = self._logit_aux_block_weight(block_idx, n_blocks)
-                        if weight <= 0.0:
-                            continue
-                        ce_k = self._answer_token_ce_loss(
-                            block_hidden=block_hidden,
-                            x_tokens=x_pos,
-                            y_tokens=y_pos,
+                        kl_terms.append(
+                            self._answer_token_kl_loss(
+                                student_hidden=student_hidden,
+                                teacher_hidden=teacher_hidden,
+                                x_tokens=x_pos,
+                            )
                         )
-                        aux_terms.append(ce_k * weight)
-                    if aux_terms:
-                        logit_aux_loss = torch.stack(aux_terms, dim=0).sum()
-                else:
-                    enable_final_block_aux = (not self.layerwise_train_single_block) or ((n_blocks - 1) in active_block_set)
-                    if enable_final_block_aux:
-                        logit_aux_loss = self._answer_token_ce_loss(
-                            block_hidden=pos_block_outputs_causal[-1],
-                            x_tokens=x_pos,
-                            y_tokens=y_pos,
-                        )
+                    if kl_terms:
+                        kl_sync_loss = torch.stack(kl_terms, dim=0).mean()
 
-            total_loss = ff_loss_total + (self.logit_aux_weight * logit_aux_loss)
+            total_loss = (
+                ff_loss_total
+                + (self.logit_aux_weight * logit_aux_loss)
+                + (self.kl_sync_weight * kl_sync_loss)
+            )
 
             finite = torch.isfinite(total_loss)
             if not bool(finite.item()):
@@ -840,6 +965,8 @@ class FFDiscriminativeTrainer:
                 self.history["block_separation"][block_idx].append(stats["separation"])
                 self.history["block_separation_ratio"][block_idx].append(stats["separation_ratio"])
                 self.history["block_accuracy"][block_idx].append(stats["accuracy"])
+                self.history["block_collab_pos_offset"][block_idx].append(stats["collab_pos_offset"])
+                self.history["block_collab_neg_offset"][block_idx].append(stats["collab_neg_offset"])
 
             for optimizer in self.block_optimizers:
                 optimizer.zero_grad(set_to_none=True)
@@ -863,15 +990,19 @@ class FFDiscriminativeTrainer:
                 elapsed = max(time.perf_counter() - start_time, 1e-8)
                 steps_per_sec = step / elapsed
 
-                block_msg = " ".join(
-                    [
-                        (
-                            f"b{idx}:g+={stats['g_pos']:.4f},g-={stats['g_neg']:.4f},"
-                            f"th={stats['threshold']:.4f},sep={stats['separation']:.4f}"
+                block_parts: list[str] = []
+                for idx, stats in enumerate(block_stats):
+                    part = (
+                        f"b{idx}:g+={stats['g_pos']:.4f},g-={stats['g_neg']:.4f},"
+                        f"th={stats['threshold']:.4f},sep={stats['separation']:.4f}"
+                    )
+                    if collaborative_enabled:
+                        part += (
+                            f",co+={stats['collab_pos_offset']:.4f},"
+                            f"co-={stats['collab_neg_offset']:.4f}"
                         )
-                        for idx, stats in enumerate(block_stats)
-                    ]
-                )
+                    block_parts.append(part)
+                block_msg = " ".join(block_parts)
                 active_blocks_msg = ",".join(str(idx) for idx in active_blocks)
 
                 if not should_eval:
@@ -879,6 +1010,7 @@ class FFDiscriminativeTrainer:
                         f"[ff-disc step {step}] loss={total_loss.item():.4f} "
                         f"ff_loss={ff_loss_total.item():.4f} "
                         f"logit_aux={logit_aux_loss.item():.4f} "
+                        f"kl_sync={kl_sync_loss.item():.4f} "
                         f"active_blocks=[{active_blocks_msg}] "
                         f"steps_per_sec={steps_per_sec:.2f} "
                         f"(eval skipped) {block_msg}"
@@ -935,6 +1067,7 @@ class FFDiscriminativeTrainer:
                     self.history["step"].append(step)
                     self.history["loss"].append(float(total_loss.item()))
                     self.history["logit_aux_loss"].append(float(logit_aux_loss.item()))
+                    self.history["kl_sync_loss"].append(float(kl_sync_loss.item()))
                     self.history["train_token_accuracy"].append(train_good.token_accuracy)
                     self.history["test_token_accuracy"].append(test_good.token_accuracy)
                     self.history["train_sequence_exact_match"].append(train_good.sequence_exact_match)
@@ -956,6 +1089,7 @@ class FFDiscriminativeTrainer:
                         f"[ff-disc step {step}] loss={total_loss.item():.4f} "
                         f"ff_loss={ff_loss_total.item():.4f} "
                         f"logit_aux={logit_aux_loss.item():.4f} "
+                        f"kl_sync={kl_sync_loss.item():.4f} "
                         f"active_blocks=[{active_blocks_msg}] "
                         f"good_w=[{weights_msg}] "
                         f"steps_per_sec={steps_per_sec:.2f} "
