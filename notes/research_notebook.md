@@ -210,3 +210,20 @@
 - Interpretation:
   - Layerwise training improved final combined goodness accuracy slightly (`0.40 -> 0.45`), but it did **not** produce healthy specialization.
   - Block1 remains mostly harmful as a fixer (high degrade, low rescue), indicating the core objective/aggregation mismatch remains.
+
+### Entry 24
+- Tested “attenuate block contribution when not confident” and “10x data” hypotheses.
+- Confidence attenuation probe (3-digit FF-disc checkpoints, candidate-goodness diagnostics on 128-sample subsets):
+  - `n=20k` (`d3_rnd_n20000_s42_long`): goodness combined accuracy on test subset was ~`0.008`; block0 and block1 each near `0.0`.
+  - `n=200k` (`d3_rnd_n200000_s42_long`, 10x dataset size): goodness combined/test remained `0.0`.
+  - Margin-gated use of block1 (`tau` sweep on block1 top-2 margin) did not recover accuracy in this regime.
+- Strict “10x data seen” probe (2-digit, same dataset, 10x training steps):
+  - baseline reference checkpoint (`n=10k`, `steps=400`): eval-subset test logit exact `0.0352`.
+  - new run (`n=10k`, `steps=4000`, tag `d2_rnd_n10000_s42_step4000`):
+    - final reported full-test logit exact `0.0391`
+    - eval-subset test logit exact remained `0.0352`
+    - train logit exact increased modestly (`~0.035 -> ~0.055-0.066` depending on full-vs-subset metric).
+- Takeaway:
+  - More data diversity (10x `3-digit` samples) did not improve FF-disc at this budget.
+  - More exposures (10x steps on 2-digit) mostly increased train fit with negligible test gains.
+  - This is consistent with objective/credit-assignment limitations rather than simple undertraining.
