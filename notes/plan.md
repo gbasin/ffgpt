@@ -276,6 +276,7 @@ The build order naturally creates ablations. Each step adds one component; diagn
 - Step 8 collaborative FF variants (two-phase collaboration, KL sync) are not implemented.
 - Phase 4 ablation `E.detach?` off (`C1`) is not yet run.
 - Goodness-based FF inference does not yet scale cleanly to very large answer spaces; large-digit experiments currently focus on logit inference.
+- Add DeeperForward-style inter-block signal decoupling/normalization so later blocks cannot over-rely on upstream magnitude shortcuts.
 
 ### Current diagnosis from recent ablations
 - FF-AR passes tiny-set memorization gates (1-digit and 2-digit tiny random splits), so the core pipeline can fit.
