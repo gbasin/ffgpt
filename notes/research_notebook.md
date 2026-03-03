@@ -177,3 +177,36 @@
 - Additional ablation:
   - final-block-only CE (`nonfinal=0`) under no-aux underperformed (train exact `0.041-0.049`, test exact `~0.000-0.002`).
   - This suggests some non-final supervision is still useful in current FF setup.
+
+## 2026-03-03
+
+### Entry 22
+- Implemented a new FF-discriminative ablation mode: **layerwise single-block training**.
+  - New trainer flags:
+    - `layerwise_train_single_block`
+    - `layerwise_phase_steps`
+  - In this mode, only one block is updated per phase (`block_i` active in phase `i`), with earlier blocks frozen.
+  - Logit aux loss is enabled only when the final block is active.
+  - Checkpoints now save layerwise metadata for reproducibility.
+- Added CLI support in `train_discriminative.py`:
+  - `--layerwise-train-single-block`
+  - `--layerwise-phase-steps` (comma-separated, must match `n_blocks` and sum to `--steps`)
+
+### Entry 23
+- Ran comparison on 1-digit `coverage_s42` (same split as prior references), `steps=2000`.
+  - Joint FF-disc (prior reference checkpoint):
+    - goodness test exact `0.40`
+    - block diagnostics on test:
+      - block0 acc `0.40`, block1 acc `0.20`
+      - rescue `0->1`: `0.25` (12 cases)
+      - degrade `0->1`: `0.875` (8 cases)
+  - Layerwise FF-disc (`phase_steps=1000,1000`):
+    - goodness test exact `0.45`
+    - block diagnostics on test:
+      - block0 acc `0.50`, block1 acc `0.10`
+      - combined acc `0.45` (still below block0-only)
+      - rescue `0->1`: `0.10` (10 cases)
+      - degrade `0->1`: `0.90` (10 cases)
+- Interpretation:
+  - Layerwise training improved final combined goodness accuracy slightly (`0.40 -> 0.45`), but it did **not** produce healthy specialization.
+  - Block1 remains mostly harmful as a fixer (high degrade, low rescue), indicating the core objective/aggregation mismatch remains.

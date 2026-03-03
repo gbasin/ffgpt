@@ -67,6 +67,17 @@ def parse_args() -> argparse.Namespace:
         default="1",
         help="Comma-separated offsets for near-miss negatives, e.g. '1' or '1,2'",
     )
+    parser.add_argument(
+        "--layerwise-train-single-block",
+        action="store_true",
+        help="Train one block per phase and freeze previously trained blocks.",
+    )
+    parser.add_argument(
+        "--layerwise-phase-steps",
+        type=str,
+        default=None,
+        help="Comma-separated steps per block phase; length must equal n_blocks and sum must equal --steps.",
+    )
     return parser.parse_args()
 
 
@@ -80,6 +91,13 @@ def main() -> None:
     near_miss_start_step = args.near_miss_start_step
     if near_miss_start_step is None:
         near_miss_start_step = max(1, args.steps // 2)
+    layerwise_phase_steps = None
+    if args.layerwise_phase_steps is not None:
+        layerwise_phase_steps = [int(x.strip()) for x in args.layerwise_phase_steps.split(",") if x.strip()]
+        if not layerwise_phase_steps:
+            raise ValueError("--layerwise-phase-steps was provided but no valid integers were parsed")
+    if (layerwise_phase_steps is not None) and (not args.layerwise_train_single_block):
+        raise ValueError("--layerwise-phase-steps requires --layerwise-train-single-block")
 
     vocab = Vocab()
     if args.operand_digits == 1 and args.samples == 0:
@@ -122,6 +140,9 @@ def main() -> None:
         else f"d{args.operand_digits}_{args.split}_s{args.split_seed}"
     )
     print(f"[run] run_tag={run_tag}")
+    if args.layerwise_train_single_block:
+        phase_label = layerwise_phase_steps if layerwise_phase_steps is not None else "auto"
+        print(f"[ablation] layerwise_train_single_block=on phase_steps={phase_label}")
     max_answer_tokens = args.operand_digits + 1
     max_answer_value = max_sum_for_operand_digits(args.operand_digits)
     max_seq_len = max_seq_len_for_operand_digits(args.operand_digits)
@@ -172,6 +193,8 @@ def main() -> None:
         logit_rank_eval_max_candidates=args.logit_rank_eval_max_candidates,
         near_miss_start_step=near_miss_start_step,
         near_miss_offsets=near_miss_offsets,
+        layerwise_train_single_block=args.layerwise_train_single_block,
+        layerwise_phase_steps=layerwise_phase_steps,
         device=args.device,
         seed=args.seed,
         run_tag=run_tag,

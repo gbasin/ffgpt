@@ -70,6 +70,8 @@ class FFDiscriminativeTrainer:
         logit_rank_eval_max_candidates: int = 512,
         near_miss_start_step: int | None = None,
         near_miss_offsets: tuple[int, ...] = (1,),
+        layerwise_train_single_block: bool = False,
+        layerwise_phase_steps: list[int] | None = None,
         device: str = "cpu",
         seed: int = 42,
         run_tag: str | None = None,
@@ -88,6 +90,7 @@ class FFDiscriminativeTrainer:
         self.sequence_length = int(sequence_length) if sequence_length is not None else int(self.model.config.max_seq_len)
         self.near_miss_start_step = near_miss_start_step
         self.near_miss_offsets = tuple(int(x) for x in near_miss_offsets)
+        self.layerwise_train_single_block = bool(layerwise_train_single_block)
         self.device = torch.device(device)
         self.seed = seed
         self.run_tag = run_tag
@@ -131,6 +134,15 @@ class FFDiscriminativeTrainer:
         )
 
         n_blocks = len(self.model.blocks)
+        self.layerwise_phase_steps = self._normalize_layerwise_phase_steps(
+            layerwise_phase_steps=layerwise_phase_steps,
+            n_blocks=n_blocks,
+        )
+        running = 0
+        self.layerwise_phase_boundaries: list[int] = []
+        for phase_steps in self.layerwise_phase_steps:
+            running += phase_steps
+            self.layerwise_phase_boundaries.append(running)
         self.thresholds: list[torch.Tensor | None] = [None for _ in range(n_blocks)]
         self.collapse_counts: list[int] = [0 for _ in range(n_blocks)]
         self.loss_increase_streak = 0
@@ -152,6 +164,7 @@ class FFDiscriminativeTrainer:
             "test_logit_mean_correct_rank": [],
             "eval_train_size": [],
             "eval_test_size": [],
+            "active_block": [],
             "logit_aux_loss": [],
             "block_g_pos": [[] for _ in range(n_blocks)],
             "block_g_neg": [[] for _ in range(n_blocks)],
@@ -160,6 +173,57 @@ class FFDiscriminativeTrainer:
             "block_separation_ratio": [[] for _ in range(n_blocks)],
             "block_accuracy": [[] for _ in range(n_blocks)],
         }
+
+    def _normalize_layerwise_phase_steps(
+        self,
+        layerwise_phase_steps: list[int] | None,
+        n_blocks: int,
+    ) -> list[int]:
+        if not self.layerwise_train_single_block:
+            return [self.num_steps]
+
+        if n_blocks <= 0:
+            raise ValueError("model must contain at least one block")
+
+        if layerwise_phase_steps is None:
+            if self.num_steps == 0:
+                return [0 for _ in range(n_blocks)]
+            if self.num_steps < n_blocks:
+                raise ValueError(
+                    "layerwise single-block training requires num_steps >= n_blocks when phase steps are automatic. "
+                    f"Got num_steps={self.num_steps}, n_blocks={n_blocks}"
+                )
+            base = self.num_steps // n_blocks
+            remainder = self.num_steps % n_blocks
+            steps = [base for _ in range(n_blocks)]
+            for idx in range(remainder):
+                steps[idx] += 1
+            return steps
+
+        steps = [int(x) for x in layerwise_phase_steps]
+        if len(steps) != n_blocks:
+            raise ValueError(
+                f"layerwise_phase_steps length must match n_blocks ({n_blocks}), got {len(steps)}"
+            )
+        if any(step < 0 for step in steps):
+            raise ValueError(f"layerwise_phase_steps must be non-negative, got {steps}")
+        if self.num_steps > 0 and sum(steps) != self.num_steps:
+            raise ValueError(
+                "sum(layerwise_phase_steps) must equal num_steps for layerwise single-block training. "
+                f"Got sum={sum(steps)}, num_steps={self.num_steps}"
+            )
+        if all(step == 0 for step in steps):
+            raise ValueError("layerwise_phase_steps cannot be all zeros")
+        return steps
+
+    def _active_blocks_for_step(self, step: int) -> list[int]:
+        if not self.layerwise_train_single_block:
+            return list(range(len(self.model.blocks)))
+
+        phase_idx = 0
+        while phase_idx < (len(self.layerwise_phase_boundaries) - 1) and step > self.layerwise_phase_boundaries[phase_idx]:
+            phase_idx += 1
+        return [phase_idx]
 
     def _negative_strategy_for_step(self, step: int) -> str:
         if self.near_miss_start_step is not None and step >= self.near_miss_start_step:
@@ -486,6 +550,8 @@ class FFDiscriminativeTrainer:
             "enable_goodness_eval": self.enable_goodness_eval,
             "enable_logit_rank_diagnostics": self.enable_logit_rank_diagnostics,
             "logit_rank_eval_max_candidates": self.logit_rank_eval_max_candidates,
+            "layerwise_train_single_block": self.layerwise_train_single_block,
+            "layerwise_phase_steps": self.layerwise_phase_steps,
             "rng_states": capture_rng_states(),
         }
         path = self.checkpoint_dir / f"{self.checkpoint_prefix}_step{step}.pt"
@@ -546,9 +612,14 @@ class FFDiscriminativeTrainer:
                     }
                 )
 
-            ff_loss_total = sum(block_losses)
+            active_blocks = self._active_blocks_for_step(step)
+            active_block_set = set(active_blocks)
+            ff_loss_total = torch.stack([block_losses[idx] for idx in active_blocks], dim=0).sum()
             logit_aux_loss = torch.tensor(0.0, device=self.device)
-            if self.logit_aux_weight > 0.0:
+            enable_logit_aux = self.logit_aux_weight > 0.0 and (
+                (not self.layerwise_train_single_block) or ((len(self.model.blocks) - 1) in active_block_set)
+            )
+            if enable_logit_aux:
                 x_pos = pos_tokens[:, :-1]
                 y_pos = pos_tokens[:, 1:]
                 x_pos_mask = x_pos != self.vocab.pad_id
@@ -605,9 +676,11 @@ class FFDiscriminativeTrainer:
 
             total_loss.backward()
 
-            for optimizer in self.block_optimizers:
-                optimizer.step()
-            self.embedding_optimizer.step()
+            for block_idx, optimizer in enumerate(self.block_optimizers):
+                if block_idx in active_block_set:
+                    optimizer.step()
+            if 0 in active_block_set:
+                self.embedding_optimizer.step()
 
             if step % log_every == 0 or step == 1 or step == self.num_steps:
                 should_eval = (
@@ -628,12 +701,14 @@ class FFDiscriminativeTrainer:
                         for idx, stats in enumerate(block_stats)
                     ]
                 )
+                active_blocks_msg = ",".join(str(idx) for idx in active_blocks)
 
                 if not should_eval:
                     print(
                         f"[ff-disc step {step}] loss={total_loss.item():.4f} "
                         f"ff_loss={ff_loss_total.item():.4f} "
                         f"logit_aux={logit_aux_loss.item():.4f} "
+                        f"active_blocks=[{active_blocks_msg}] "
                         f"steps_per_sec={steps_per_sec:.2f} "
                         f"(eval skipped) {block_msg}"
                     )
@@ -697,11 +772,13 @@ class FFDiscriminativeTrainer:
                     self.history["test_logit_mean_correct_rank"].append(test_log_rank)
                     self.history["eval_train_size"].append(len(train_eval))
                     self.history["eval_test_size"].append(len(test_eval))
+                    self.history["active_block"].append(active_blocks[0] if self.layerwise_train_single_block else -1)
 
                     print(
                         f"[ff-disc step {step}] loss={total_loss.item():.4f} "
                         f"ff_loss={ff_loss_total.item():.4f} "
                         f"logit_aux={logit_aux_loss.item():.4f} "
+                        f"active_blocks=[{active_blocks_msg}] "
                         f"steps_per_sec={steps_per_sec:.2f} "
                         f"train_logit_exact={train_log.sequence_exact_match:.3f} "
                         f"test_logit_exact={test_log.sequence_exact_match:.3f} "
