@@ -341,3 +341,36 @@
   - mean test logit exact `0.1167`
   - balanced `0.2500`
 - Conclusion: at current architecture/objective scale, D1+D2 does **not** outperform the no-collaboration best combined configuration.
+
+### Entry 33
+- Added block-level help/hurt analysis tool: `analyze_block_help_hurt.py`.
+  - Supports baseline + FF-discriminative + FF-autoregressive checkpoint loading on a common split.
+  - Computes per-block test accuracy and transition stats (`rescue` / `degrade`) for block `k -> k+1`.
+  - For FF-discriminative goodness path, reports both block-local transitions and combined-final exact.
+  - For baseline, adds matched-depth comparisons by decoding with truncated block stacks (`block0-only` vs full-depth).
+
+### Entry 34
+- Ran analyzer on `coverage_s42` core checkpoints:
+  - baseline: `baseline_coverage_s42_step2000.pt`
+  - FF-disc: `discriminative_coverage_s42_step2000.pt`
+  - FF-AR: `autoregressive_coverage_s42_step2000.pt`
+  - output: `checkpoints/analysis/block_help_hurt_coverage_s42_core.json`
+- Test-set results:
+  - baseline (logits): block acc `[0.10, 0.20]`, rescue `0.222` (4/18), degrade `1.00` (2/2), final exact `0.20`.
+  - FF-disc goodness: block acc `[0.40, 0.20]`, rescue `0.25` (3/12), degrade `0.875` (7/8), combined final exact `0.40`.
+  - FF-disc logits: block acc `[0.05, 0.00]`, rescue `0.00` (0/19), degrade `1.00` (1/1), final exact `0.00`.
+  - FF-AR logits: block acc `[0.30, 0.25]`, rescue `0.00` (0/14), degrade `0.167` (1/6), final exact `0.25`.
+- Interpretation:
+  - On this split/checkpoint set, FF-disc goodness block1 is mostly harmful as a fixer (high degrade, low rescue), consistent with earlier diagnostics.
+  - FF-AR block1 mildly hurts (`0.30 -> 0.25`) and does not rescue block0 misses in this run.
+
+### Entry 35
+- Re-ran analyzer with the best-S42 FF-disc checkpoint from aux-grid:
+  - FF-disc: `discriminative_coverage_auxgrid_combined_refine_s42_a0.05_n0.25_step2000.pt`
+  - output: `checkpoints/analysis/block_help_hurt_coverage_s42_discbest_s42.json`
+- Test-set comparison (baseline + FF-AR unchanged):
+  - FF-disc goodness remains final exact `0.40`, but block transition improves vs core FF-disc:
+    - rescue `0.00` (0/12), degrade `0.125` (1/8)
+  - FF-disc logits improves slightly to final exact `0.05` (from `0.00` on core FF-disc), still weak.
+- Takeaway:
+  - Best tuned FF-disc reduces block1 harm on goodness (lower degrade), but still shows little positive rescue behavior from block1 on this split.
