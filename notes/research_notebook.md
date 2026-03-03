@@ -265,3 +265,20 @@
   - default retest (`d2_rnd_n10000_retest_default_post123`): test logit exact `0.0039`
   - combined (`layernorm + per-block aux`): test logit exact `0.0195`
 - So in this short-budget 2-digit regime, combined settings improved logit test exact by ~5x relative (still low in absolute terms).
+
+### Entry 28
+- Parameter-sanity check focused on FF-disc aux scale:
+  - Original per-block-aux settings (`logit_aux_weight=1.0`, nonfinal=1.0) caused strong goodness collapse on `coverage_s42`:
+    - perblockaux: goodness test exact `0.05`, logit test exact `0.10`
+    - combined: goodness test exact `0.05`, logit test exact `0.15`
+- Tuned lower aux scale (`logit_aux_weight=0.25`, `nonfinal_block_logit_aux_weight=0.25`, final=1.0):
+  - `coverage_s42_retest_perblockaux_tuned025`:
+    - goodness test exact `0.20`
+    - logit test exact `0.20`
+  - `coverage_s42_retest_combined_tuned025`:
+    - goodness test exact `0.15`
+    - logit test exact `0.15`
+- Interpretation:
+  - We are **not** yet in a globally “sane by default” regime for the new knobs.
+  - Aux scale is a critical stability parameter; high defaults over-prioritize predictive aux and can destroy goodness ranking.
+  - Lower aux improves balance and avoids catastrophic collapse, but still does not beat the original goodness baseline (`0.40`) on this split.
