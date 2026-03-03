@@ -423,3 +423,37 @@
 - Impact:
   - Previous FF-AR ablations using `use_per_block_output_heads=True` were partially invalid because decode ignored those heads.
   - Re-runs are required for apples-to-apples comparison of output-head ablations.
+
+### Entry 39
+- Re-ran matched 3-digit FF-AR comparison after decode fix (`n=20000`, random split `16000/4000`, seed/split_seed `42`, `steps=2000`, `goodness_aux_weight=0`, `skip_goodness_eval`):
+  - no output heads (`d3_rnd_n20000_s42_step2k_fixcmp_nohead`):
+    - train exact `0.0086`, test exact `0.0067`
+  - per-block output heads enabled (`d3_rnd_n20000_s42_step2k_fixcmp_head`):
+    - train exact `0.0088`, test exact `0.0060`
+- Conclusion at 2k steps:
+  - Fix is functionally correct, but enabling output heads does not materially improve this regime.
+
+### Entry 40
+- Ran longer 8k-step FF-AR with fixed decode and output heads (`d3_rnd_n20000_s42_curve8k_ffar_headfix`):
+  - final train exact `0.0130`
+  - final test exact `0.0120`
+- Compared against prior no-head 8k checkpoint (`d3_rnd_n20000_s42_curve8k_ffar_noaux`):
+  - no-head test exact `0.0095` vs headfix test exact `0.0120` (small absolute gain, still near failure floor).
+  - no-head test token acc `0.4823` vs headfix `0.4955`.
+  - per-position test accuracy (answer digits incl PAD slot):
+    - no-head: `{0: 0.8268, 1: 0.4778, 2: 0.1010, 3: 0.5235}`
+    - headfix: `{0: 0.8875, 1: 0.4388, 2: 0.1148, 3: 0.5410}`
+- Teacher-forced check (same checkpoints/split, final-block logits):
+  - no-head: exact `0.0095`, token acc `0.4936`
+  - headfix: exact `0.0120`, token acc `0.5046`
+- Interpretation:
+  - Greedy vs teacher-forced are nearly identical at this operating point, so decode exposure-bias is not the dominant failure mode.
+  - Main failure remains objective/credit assignment around carry-sensitive middle digits.
+
+### Entry 41
+- External paper scan on “FF + transformers for NLP/ViT” and why they report success:
+  - **Vision-focused FF transformer work** (e.g., contrastive FF ViT variants) succeeds in encoder/classification settings with stronger contrastive objectives and heavy normalization, not autoregressive next-token generation.
+  - **Layer-collaboration FF work** adds explicit cross-layer coordination/offset terms to reduce layer conflict in deep FF.
+  - **NLP FF transformer reports** are limited and generally small-scale; there is not strong evidence yet for robust autoregressive generation matching backprop.
+- Practical implication for this repo:
+  - Our observed AR failure is consistent with the literature gap: local FF objectives are currently much better validated for classification than for deep autoregressive carry computation.

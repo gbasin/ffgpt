@@ -283,14 +283,15 @@ The build order naturally creates ablations. Each step adds one component; diagn
 - Research progress log at `notes/research_notebook.md`.
 
 ### Still open / not yet implemented
-- Phase 4 ablation `E.detach?` off (`C1`) is not yet run.
 - Goodness-based FF inference does not yet scale cleanly to very large answer spaces; large-digit experiments currently focus on logit inference.
+- FF-AR objective redesign ablations (answer-only CE, curriculum/block scheduling, and stronger carry-focused objectives) remain to be run systematically.
 
 ### Current diagnosis from recent ablations
 - FF-AR passes tiny-set memorization gates (1-digit and 2-digit tiny random splits), so the core pipeline can fit.
-- At 3-digit `n=20000`, `steps=2000`:
-  - backprop baseline achieves strong exact-match (`~0.266` on eval subset),
-  - FF-AR remains near-zero exact-match with default objective.
+- At 3-digit `n=20000`:
+  - backprop baseline reaches strong exact-match by `steps=8000` (`train ~0.795`, `test ~0.758` full-set),
+  - FF-AR remains near-zero exact-match by `steps=8000` (`~0.0095` no-head; `~0.0120` with per-block output heads + fixed decode path).
 - AR ablations:
   - removing output-embedding detach did not improve results,
-  - per-block output heads gave a small gain but still far below baseline.
+  - per-block output heads give only a small gain and remain far below baseline,
+  - an inference bug where decode ignored per-block output heads was fixed; reruns with the fix still show near-failure-floor performance.
