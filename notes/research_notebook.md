@@ -235,3 +235,33 @@
   3. **Non-equal block aggregation at inference** through `goodness_aggregation=weighted_sum`, optional manual `goodness_block_weights`, and optional eval-time fitting (`fit_goodness_block_weights`) on train-eval subset.
 - Added checkpoint/eval plumbing so these settings serialize and reload correctly.
 - Smoke-tested combined path (`layernorm + per-block aux + weighted_sum + fit weights`) with `steps=20` on `coverage_s42`; run executed end-to-end and produced checkpoints.
+
+### Entry 26
+- Ran a thorough retest matrix on `1-digit coverage_s42` (`steps=2000`, same split/seed) for the new FF-disc knobs:
+  - **Default retest** (`coverage_s42_retest_default`):
+    - goodness test exact `0.40`
+    - logit test exact `0.00`
+    - test block acc: block0 `0.40`, block1 `0.20`
+    - rescue `0->1`: `0.25` (den=12), degrade `0->1`: `0.875` (den=8)
+  - **Inter-block norm only** (`inter_block_norm=layernorm`):
+    - goodness test exact `0.40` (no gain)
+    - logit test exact `0.00`
+  - **Per-block aux only** (`use_per_block_logit_aux`):
+    - goodness test exact `0.05` (major drop)
+    - logit test exact `0.10` (improved)
+  - **Weighted goodness aggregation + fitted weights**:
+    - learned weights converged to roughly `[0.25, 0.0]` (effectively block0-only)
+    - goodness test exact `0.40` (neutral)
+    - logit test exact `0.00`
+  - **Combined** (`layernorm + per-block aux + weighted/fitted`):
+    - goodness test exact `0.05` (still low)
+    - logit test exact `0.15` (best in this matrix)
+- Interpretation on this split:
+  - New knobs are useful for **logit inference** improvements.
+  - They hurt or do not improve **goodness inference** in current form, so they do not solve the block-collaboration issue for goodness scoring yet.
+
+### Entry 27
+- Added 2-digit sanity retest (`operand_digits=2`, `n=10000`, random split, `steps=400`, skip-goodness-eval):
+  - default retest (`d2_rnd_n10000_retest_default_post123`): test logit exact `0.0039`
+  - combined (`layernorm + per-block aux`): test logit exact `0.0195`
+- So in this short-budget 2-digit regime, combined settings improved logit test exact by ~5x relative (still low in absolute terms).
