@@ -374,3 +374,20 @@
   - FF-disc logits improves slightly to final exact `0.05` (from `0.00` on core FF-disc), still weak.
 - Takeaway:
   - Best tuned FF-disc reduces block1 harm on goodness (lower degrade), but still shows little positive rescue behavior from block1 on this split.
+
+### Entry 36
+- Grokking/undertraining check via longer-horizon 3-digit curves (matched data/split, larger eval set):
+  - Dataset: `operand_digits=3`, random split, `samples=20000`, `train=16000`, `test=4000`, `split_seed=42`.
+  - Trained to `8000` steps with eval every `200` on 1024-sample train/test subsets.
+  - Baseline run tag: `d3_rnd_n20000_s42_curve8k_base`.
+  - FF-AR run tag: `d3_rnd_n20000_s42_curve8k_ffar_noaux` (`goodness_aux_weight=0.0`, `skip_goodness_eval`).
+- Full-set final exact (no subsampling):
+  - baseline: train `0.7951`, test `0.7580`
+  - FF-AR no-aux: train `0.0103`, test `0.0095`
+- Curve artifact:
+  - `checkpoints/analysis/d3_curve8k_baseline_vs_ffar_noaux_exact.png`
+- Curve-shape finding:
+  - Baseline test curve climbs strongly through the full window.
+  - FF-AR no-aux remains near-flat around ~1% exact without a delayed test takeoff.
+- Interpretation:
+  - In this setup, poor FF-AR performance is not explained by “just keep training until post-memorization grokking”; no grokking-like late generalization signature appears in the observed 8k-step horizon.
