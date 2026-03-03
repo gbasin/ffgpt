@@ -166,3 +166,14 @@
   - FF-AR no-aux (`aux=0.0`): train exact `0.1055`, test exact `0.0039`
   - FF-AR no-aux + heads+weighted: train exact `0.0859`, test exact `0.0020`
 - Takeaway: goodness auxiliary appears to interfere with token-learning in this regime; removing it helps somewhat, but FF remains far below baseline.
+
+### Entry 21
+- Added `analyze_length_ood_checkpoint.py` to measure **greedy decode vs teacher-forced** metrics on the same checkpoint and dataset.
+- Key systematic finding on `2->3` OOD (eval subset 512):
+  - FF default: greedy train exact `0.0918`, teacher-forced train exact `0.0918`
+  - FF no-aux: greedy train exact `0.0996`, teacher-forced train exact `0.0996`
+  - FF no-aux final-only CE: greedy train exact `0.0488`, teacher-forced train exact `0.0488`
+- Interpretation: decode strategy is **not** the primary bottleneck here; teacher-forced and greedy exact are nearly identical for the best FF runs.
+- Additional ablation:
+  - final-block-only CE (`nonfinal=0`) under no-aux underperformed (train exact `0.041-0.049`, test exact `~0.000-0.002`).
+  - This suggests some non-final supervision is still useful in current FF setup.

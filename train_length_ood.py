@@ -62,7 +62,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-detach-output-embedding", action="store_true")
     parser.add_argument("--use-per-block-output-heads", action="store_true")
     parser.add_argument("--final-block-loss-weight", type=float, default=1.0)
-    parser.add_argument("--nonfinal-block-loss-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--nonfinal-block-loss-weight",
+        type=float,
+        default=1.0,
+        help="Can be set to 0.0 for final-block-only CE.",
+    )
     return parser.parse_args()
 
 

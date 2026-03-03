@@ -827,9 +827,9 @@ class FFAutoregressiveTrainer:
         self.use_per_block_output_heads = bool(use_per_block_output_heads)
         self.final_block_loss_weight = float(final_block_loss_weight)
         self.nonfinal_block_loss_weight = float(nonfinal_block_loss_weight)
-        if self.final_block_loss_weight <= 0.0 or self.nonfinal_block_loss_weight <= 0.0:
+        if self.final_block_loss_weight <= 0.0 or self.nonfinal_block_loss_weight < 0.0:
             raise ValueError(
-                "final_block_loss_weight and nonfinal_block_loss_weight must be > 0. "
+                "final_block_loss_weight must be > 0 and nonfinal_block_loss_weight must be >= 0. "
                 f"Got {self.final_block_loss_weight}, {self.nonfinal_block_loss_weight}"
             )
 

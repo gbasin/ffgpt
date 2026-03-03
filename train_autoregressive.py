@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         "--nonfinal-block-loss-weight",
         type=float,
         default=1.0,
-        help="Weight multiplier for non-final block candidate CE losses.",
+        help="Weight multiplier for non-final block candidate CE losses (can be 0 for final-block-only CE).",
     )
     parser.add_argument("--split", type=str, default="mod5", choices=["mod5", "coverage", "random"])
     parser.add_argument("--split-seed", type=int, default=42)
