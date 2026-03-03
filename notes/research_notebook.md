@@ -391,3 +391,22 @@
   - FF-AR no-aux remains near-flat around ~1% exact without a delayed test takeoff.
 - Interpretation:
   - In this setup, poor FF-AR performance is not explained by “just keep training until post-memorization grokking”; no grokking-like late generalization signature appears in the observed 8k-step horizon.
+
+### Entry 37
+- Inspected FF-AR loss/training path directly (`ffgpt/ff_trainer.py`) to identify objective-level bottlenecks.
+- Key mechanics:
+  - Candidate loss is computed on the full shifted sequence (`x=full[:,:-1]`, `y=full[:,1:]`) for each block, then summed.
+  - With current defaults (`k_negatives=12`, vocab size 13), FF-AR effectively uses full-vocab CE at each block.
+  - Optional goodness auxiliary adds a second objective using random negative full equations.
+  - Detach-between-blocks remains active throughout (strict local learning).
+- Additional 3-digit diagnostics (from checkpoints `baseline_d3_rnd_n20000_s42_curve8k_base_step8000.pt` and `autoregressive_d3_rnd_n20000_s42_curve8k_ffar_noaux_step8000.pt`):
+  - Full-set exact:
+    - baseline train/test: `0.7951 / 0.7580`
+    - FF-AR train/test: `0.0103 / 0.0095`
+  - Answer-position token accuracy (test subset):
+    - baseline: `{0: 0.963, 1: 0.888, 2: 0.864, 3: 0.992}`
+    - FF-AR: `{0: 0.820, 1: 0.501, 2: 0.103, 3: 0.551}`
+  - This points to severe failure on middle answer digits (carry-sensitive positions), not just mild underfit.
+- Important implementation mismatch found:
+  - In FF-AR `predict_with_logits`, inference always projects with `embedding_weight.detach()` and does not use `_project_block_logits`.
+  - Therefore, if `use_per_block_output_heads=True`, eval-time decode does not use trained per-block heads, which can invalidate those ablation conclusions.
