@@ -76,6 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--phase1-steps", type=int, default=None, help="Steps for phase 1 (block 0 solo); required if --staged-training")
     parser.add_argument("--gate-init-bias", type=float, default=-5.0, help="Initial bias for gate sigmoid (default: -5.0 => near-zero pass-through)")
     parser.add_argument("--no-freeze-embeddings-phase2", action="store_true", help="Do not freeze embeddings in phase 2 (default: freeze)")
+    parser.add_argument("--redundancy-reduction-weight", type=float, default=0.0, help="Weight for redundancy reduction loss between adjacent blocks (0=off)")
     return parser.parse_args()
 
 
@@ -183,6 +184,7 @@ def main() -> None:
         phase1_steps=args.phase1_steps,
         gate_init_bias=args.gate_init_bias,
         freeze_embeddings_phase2=not args.no_freeze_embeddings_phase2,
+        redundancy_reduction_weight=args.redundancy_reduction_weight,
         device=args.device,
         seed=args.seed,
         run_tag=run_tag,

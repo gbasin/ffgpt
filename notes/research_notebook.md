@@ -495,3 +495,27 @@
   - Gated staged is 3× better than joint FF-AR on exact match (0.030 vs 0.010) and improves token accuracy across positions.
   - But still far behind baseline (0.030 vs 0.758 exact). The fundamental bottleneck is phase 1: a single FF block with local learning can't learn 3-digit addition (0% exact at 4k steps). Phase 2 then starts from a weak base.
   - The carry-heavy tens position (pos_2) remains the main failure mode at 0.195 vs baseline 0.864.
+
+### Entry 43
+- **Block probe diagnostics + redundancy reduction loss**: implemented two new tools for diagnosing and addressing the redundant-solver problem from entry 34 (both blocks independently predict the full answer, later blocks add no value).
+- **Block probes**: per-block eval that projects each block's hidden state to logits and measures token accuracy + exact match on answer positions. Logged as `blk_probe_test=[b0_exact, b1_exact, ...]`. Runs in both AR and discriminative trainers during eval steps.
+- **Redundancy reduction loss**: penalizes cosine similarity between adjacent block representations at answer positions. `block k` is detached, so block `k+1`'s optimizer is pushed to produce different representations. Controlled via `--redundancy-reduction-weight` (default 0, off).
+- **2-digit experiment** (coverage split, seed 42, n_blocks=2, steps=2000, eval_train/test_max_samples=200, skip-goodness-eval):
+
+  | Step | Baseline test_exact | RR(0.1) test_exact | Baseline blk_probe | RR(0.1) blk_probe | rr_loss |
+  |------|--------------------|--------------------|--------------------|--------------------|---------|
+  | 200  | 0.000 | 0.000 | [0.00,0.00] | [0.00,0.00] | 0.964 |
+  | 600  | 0.050 | 0.050 | [0.00,0.05] | [0.00,0.05] | 0.919 |
+  | 1000 | 0.000 | 0.000 | [0.05,0.00] | [0.05,0.00] | 0.607 |
+  | 1400 | 0.050 | 0.100 | [0.10,0.05] | [0.10,0.10] | 0.207 |
+  | 1800 | 0.100 | 0.050 | [0.10,0.10] | [0.10,0.05] | 0.014 |
+  | 2000 | 0.200 | 0.200 | [0.15,0.20] | [0.15,0.20] | -0.116 |
+
+  Final: baseline test_exact=0.200, rr(0.1) test_exact=0.200. Essentially identical.
+
+- **Observations**:
+  - rr_loss successfully drives block representations from correlated (0.99) to anti-correlated (-0.12) over training. The decorrelation mechanism works.
+  - Block probes show both blocks track each other closely in both conditions — neither specializes. b0 and b1 have similar probe accuracy throughout.
+  - No accuracy improvement from rr_loss. Decorrelated representations ≠ complementary functions.
+- **Diagnosis**: The rr_loss forces different *representations* but not different *functions*. With detach, each block still receives the same CE loss target (predict the full answer). Cosine decorrelation doesn't change what's optimal — it just rotates block 1's solution to an equally-valid but orthogonal basis. The blocks are decorrelated in representation space but redundant in function space.
+- **Implication**: Addressing redundancy requires a *loss-level* intervention, not a representation-level one. Candidates: (1) residual-target loss where block k+1 is trained to correct block k's errors rather than predict the full answer, (2) boosting-style reweighting where block k+1's loss upweights examples block k got wrong.

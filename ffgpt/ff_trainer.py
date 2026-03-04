@@ -83,6 +83,7 @@ class FFDiscriminativeTrainer:
         fit_goodness_block_weights: bool = False,
         layerwise_train_single_block: bool = False,
         layerwise_phase_steps: list[int] | None = None,
+        redundancy_reduction_weight: float = 0.0,
         device: str = "cpu",
         seed: int = 42,
         run_tag: str | None = None,
@@ -136,6 +137,7 @@ class FFDiscriminativeTrainer:
             raise ValueError("fit_goodness_block_weights=True requires goodness_aggregation='weighted_sum'")
         self.goodness_block_weights_raw = None if goodness_block_weights is None else [float(x) for x in goodness_block_weights]
         self.layerwise_train_single_block = bool(layerwise_train_single_block)
+        self.redundancy_reduction_weight = float(redundancy_reduction_weight)
         self.device = torch.device(device)
         self.seed = seed
         self.run_tag = run_tag
@@ -229,6 +231,11 @@ class FFDiscriminativeTrainer:
             "block_accuracy": [[] for _ in range(n_blocks)],
             "block_collab_pos_offset": [[] for _ in range(n_blocks)],
             "block_collab_neg_offset": [[] for _ in range(n_blocks)],
+            "redundancy_loss": [],
+            "block_probe_token_acc_train": [[] for _ in range(n_blocks)],
+            "block_probe_token_acc_test": [[] for _ in range(n_blocks)],
+            "block_probe_exact_train": [[] for _ in range(n_blocks)],
+            "block_probe_exact_test": [[] for _ in range(n_blocks)],
         }
 
     def _normalize_layerwise_phase_steps(
@@ -709,6 +716,86 @@ class FFDiscriminativeTrainer:
             "examples": examples,
         }
 
+    @torch.no_grad()
+    def _evaluate_block_probes(self, problems: list[Problem], batch_size: int = 128) -> dict[str, list[float]]:
+        n_blocks = len(self.model.blocks)
+        block_token_correct = [0 for _ in range(n_blocks)]
+        block_token_total = [0 for _ in range(n_blocks)]
+        block_seq_correct = [0 for _ in range(n_blocks)]
+        total_seqs = 0
+        equals_id = self.vocab.equals_id
+
+        for start in range(0, len(problems), batch_size):
+            batch = problems[start : start + batch_size]
+            tokens = torch.tensor(
+                [self.vocab.encode_equation(p.a, p.b, p.answer, max_len=self.sequence_length) for p in batch],
+                dtype=torch.long,
+                device=self.device,
+            )
+            x = tokens[:, :-1]
+            y = tokens[:, 1:]
+            x_mask = x != self.vocab.pad_id
+            block_outputs, _ = self.model(
+                x, pad_mask=x_mask, causal=True, detach_between_blocks=True,
+                inter_block_norm=self.inter_block_norm,
+                inter_block_norm_eps=self.inter_block_norm_eps,
+            )
+            embedding = self.model.embedding_weight.detach()
+            for k, block_hidden in enumerate(block_outputs):
+                logits = torch.matmul(block_hidden, embedding.T)
+                preds = logits.argmax(dim=-1)
+                for b_idx in range(x.shape[0]):
+                    eq_positions = (x[b_idx] == equals_id).nonzero(as_tuple=False)
+                    if eq_positions.numel() == 0:
+                        continue
+                    eq_pos = int(eq_positions[0].item())
+                    ans_preds = preds[b_idx, eq_pos:]
+                    ans_targets = y[b_idx, eq_pos:]
+                    matches = (ans_preds == ans_targets)
+                    block_token_correct[k] += int(matches.sum().item())
+                    block_token_total[k] += matches.numel()
+                    if k == 0:
+                        total_seqs += 1
+                    block_seq_correct[k] += int(matches.all().item())
+
+        token_acc = [
+            float(block_token_correct[k] / max(block_token_total[k], 1))
+            for k in range(n_blocks)
+        ]
+        exact = [
+            float(block_seq_correct[k] / max(total_seqs, 1))
+            for k in range(n_blocks)
+        ]
+        return {"block_probe_token_acc": token_acc, "block_probe_exact": exact}
+
+    def _redundancy_reduction_loss(
+        self,
+        block_outputs: list[torch.Tensor],
+        x_tokens: torch.Tensor,
+    ) -> torch.Tensor:
+        n_blocks = len(block_outputs)
+        if n_blocks < 2:
+            return torch.tensor(0.0, device=self.device)
+
+        equals_id = self.vocab.equals_id
+        pair_sims: list[torch.Tensor] = []
+        for k in range(n_blocks - 1):
+            h_k = block_outputs[k].detach()
+            h_next = block_outputs[k + 1]
+            for b_idx in range(x_tokens.shape[0]):
+                eq_positions = (x_tokens[b_idx] == equals_id).nonzero(as_tuple=False)
+                if eq_positions.numel() == 0:
+                    continue
+                eq_pos = int(eq_positions[0].item())
+                v_k = h_k[b_idx, eq_pos:]
+                v_next = h_next[b_idx, eq_pos:]
+                cos = F.cosine_similarity(v_k, v_next, dim=-1)
+                pair_sims.append(cos)
+
+        if not pair_sims:
+            return torch.tensor(0.0, device=self.device)
+        return torch.cat(pair_sims, dim=0).mean()
+
     def _save_checkpoint(self, step: int) -> Path:
         state: dict[str, Any] = {
             "mode": "discriminative",
@@ -746,6 +833,7 @@ class FFDiscriminativeTrainer:
             "logit_rank_eval_max_candidates": self.logit_rank_eval_max_candidates,
             "layerwise_train_single_block": self.layerwise_train_single_block,
             "layerwise_phase_steps": self.layerwise_phase_steps,
+            "redundancy_reduction_weight": self.redundancy_reduction_weight,
             "rng_states": capture_rng_states(),
         }
         path = self.checkpoint_dir / f"{self.checkpoint_prefix}_step{step}.pt"
@@ -933,6 +1021,12 @@ class FFDiscriminativeTrainer:
                 + (self.kl_sync_weight * kl_sync_loss)
             )
 
+            rr_loss = torch.tensor(0.0, device=self.device)
+            if self.redundancy_reduction_weight > 0.0 and len(self.model.blocks) > 1:
+                if self.logit_aux_weight > 0.0 or self.kl_sync_weight > 0.0:
+                    rr_loss = self._redundancy_reduction_loss(pos_block_outputs_causal, x_pos)
+                    total_loss = total_loss + self.redundancy_reduction_weight * rr_loss
+
             finite = torch.isfinite(total_loss)
             if not bool(finite.item()):
                 raise RuntimeError(f"NaN/Inf detected in loss at step={step}")
@@ -1005,12 +1099,15 @@ class FFDiscriminativeTrainer:
                 block_msg = " ".join(block_parts)
                 active_blocks_msg = ",".join(str(idx) for idx in active_blocks)
 
+                rr_msg = f"rr_loss={rr_loss.item():.4f} " if self.redundancy_reduction_weight > 0.0 else ""
+
                 if not should_eval:
                     print(
                         f"[ff-disc step {step}] loss={total_loss.item():.4f} "
                         f"ff_loss={ff_loss_total.item():.4f} "
                         f"logit_aux={logit_aux_loss.item():.4f} "
                         f"kl_sync={kl_sync_loss.item():.4f} "
+                        f"{rr_msg}"
                         f"active_blocks=[{active_blocks_msg}] "
                         f"steps_per_sec={steps_per_sec:.2f} "
                         f"(eval skipped) {block_msg}"
@@ -1082,7 +1179,17 @@ class FFDiscriminativeTrainer:
                     self.history["eval_test_size"].append(len(test_eval))
                     self.history["active_block"].append(active_blocks[0] if self.layerwise_train_single_block else -1)
                     self.history["goodness_block_weights"].append(list(self.goodness_block_weights))
+                    self.history["redundancy_loss"].append(float(rr_loss.item()))
 
+                    train_probes = self._evaluate_block_probes(train_eval)
+                    test_probes = self._evaluate_block_probes(test_eval)
+                    for k in range(len(self.model.blocks)):
+                        self.history["block_probe_token_acc_train"][k].append(train_probes["block_probe_token_acc"][k])
+                        self.history["block_probe_token_acc_test"][k].append(test_probes["block_probe_token_acc"][k])
+                        self.history["block_probe_exact_train"][k].append(train_probes["block_probe_exact"][k])
+                        self.history["block_probe_exact_test"][k].append(test_probes["block_probe_exact"][k])
+
+                    probe_msg = "blk_probe_test=[" + ",".join(f"{v:.2f}" for v in test_probes["block_probe_exact"]) + "]"
                     weights_msg = ",".join(f"{w:.2f}" for w in self.goodness_block_weights)
 
                     print(
@@ -1090,6 +1197,7 @@ class FFDiscriminativeTrainer:
                         f"ff_loss={ff_loss_total.item():.4f} "
                         f"logit_aux={logit_aux_loss.item():.4f} "
                         f"kl_sync={kl_sync_loss.item():.4f} "
+                        f"{rr_msg}"
                         f"active_blocks=[{active_blocks_msg}] "
                         f"good_w=[{weights_msg}] "
                         f"steps_per_sec={steps_per_sec:.2f} "
@@ -1098,6 +1206,7 @@ class FFDiscriminativeTrainer:
                         f"train_good_rank={train_good.candidate_ranking_accuracy:.3f} "
                         f"test_good_rank={test_good.candidate_ranking_accuracy:.3f} "
                         f"logit_test_rank={test_log_rank:.2f} "
+                        f"{probe_msg} "
                         f"eval_train={len(train_eval)} eval_test={len(test_eval)} {block_msg}"
                     )
 
@@ -1180,6 +1289,7 @@ class FFAutoregressiveTrainer:
         phase1_steps: int | None = None,
         gate_init_bias: float = -5.0,
         freeze_embeddings_phase2: bool = True,
+        redundancy_reduction_weight: float = 0.0,
         device: str = "cpu",
         seed: int = 42,
         run_tag: str | None = None,
@@ -1203,6 +1313,7 @@ class FFAutoregressiveTrainer:
         self.phase1_steps = int(phase1_steps) if phase1_steps is not None else None
         self.gate_init_bias = float(gate_init_bias)
         self.freeze_embeddings_phase2 = bool(freeze_embeddings_phase2)
+        self.redundancy_reduction_weight = float(redundancy_reduction_weight)
         if self.staged_training and self.phase1_steps is None:
             raise ValueError("phase1_steps is required when staged_training=True")
         if self.staged_training and self.phase1_steps is not None and self.phase1_steps > self.num_steps:
@@ -1320,6 +1431,11 @@ class FFAutoregressiveTrainer:
             "block_separation": [[] for _ in range(n_blocks)],
             "block_separation_ratio": [[] for _ in range(n_blocks)],
             "block_accuracy": [[] for _ in range(n_blocks)],
+            "redundancy_loss": [],
+            "block_probe_token_acc_train": [[] for _ in range(n_blocks)],
+            "block_probe_token_acc_test": [[] for _ in range(n_blocks)],
+            "block_probe_exact_train": [[] for _ in range(n_blocks)],
+            "block_probe_exact_test": [[] for _ in range(n_blocks)],
         }
 
     def _sample_problem_batch(self) -> list[Problem]:
@@ -1535,6 +1651,78 @@ class FFAutoregressiveTrainer:
             targets=targets,
         )
 
+    @torch.no_grad()
+    def _evaluate_block_probes(self, problems: list[Problem], batch_size: int = 128) -> dict[str, list[float]]:
+        n_blocks = len(self.model.blocks)
+        block_token_correct = [0 for _ in range(n_blocks)]
+        block_token_total = [0 for _ in range(n_blocks)]
+        block_seq_correct = [0 for _ in range(n_blocks)]
+        total_seqs = 0
+        equals_id = self.vocab.equals_id
+
+        for start in range(0, len(problems), batch_size):
+            batch = problems[start : start + batch_size]
+            _, x, y = self._build_autoregressive_batch(batch)
+            x_mask = x != self.vocab.pad_id
+            block_outputs, _ = self.model(
+                x, pad_mask=x_mask, causal=True, detach_between_blocks=True,
+                gates=self.gates,
+            )
+            for k, block_hidden in enumerate(block_outputs):
+                logits = self._project_block_logits(k, block_hidden)
+                preds = logits.argmax(dim=-1)
+                for b_idx in range(x.shape[0]):
+                    eq_positions = (x[b_idx] == equals_id).nonzero(as_tuple=False)
+                    if eq_positions.numel() == 0:
+                        continue
+                    eq_pos = int(eq_positions[0].item())
+                    ans_preds = preds[b_idx, eq_pos:]
+                    ans_targets = y[b_idx, eq_pos:]
+                    matches = (ans_preds == ans_targets)
+                    block_token_correct[k] += int(matches.sum().item())
+                    block_token_total[k] += matches.numel()
+                    if k == 0:
+                        total_seqs += 1
+                    block_seq_correct[k] += int(matches.all().item())
+
+        token_acc = [
+            float(block_token_correct[k] / max(block_token_total[k], 1))
+            for k in range(n_blocks)
+        ]
+        exact = [
+            float(block_seq_correct[k] / max(total_seqs, 1))
+            for k in range(n_blocks)
+        ]
+        return {"block_probe_token_acc": token_acc, "block_probe_exact": exact}
+
+    def _redundancy_reduction_loss(
+        self,
+        block_outputs: list[torch.Tensor],
+        x_tokens: torch.Tensor,
+    ) -> torch.Tensor:
+        n_blocks = len(block_outputs)
+        if n_blocks < 2:
+            return torch.tensor(0.0, device=self.device)
+
+        equals_id = self.vocab.equals_id
+        pair_sims: list[torch.Tensor] = []
+        for k in range(n_blocks - 1):
+            h_k = block_outputs[k].detach()
+            h_next = block_outputs[k + 1]
+            for b_idx in range(x_tokens.shape[0]):
+                eq_positions = (x_tokens[b_idx] == equals_id).nonzero(as_tuple=False)
+                if eq_positions.numel() == 0:
+                    continue
+                eq_pos = int(eq_positions[0].item())
+                v_k = h_k[b_idx, eq_pos:]
+                v_next = h_next[b_idx, eq_pos:]
+                cos = F.cosine_similarity(v_k, v_next, dim=-1)
+                pair_sims.append(cos)
+
+        if not pair_sims:
+            return torch.tensor(0.0, device=self.device)
+        return torch.cat(pair_sims, dim=0).mean()
+
     def _save_checkpoint(self, step: int) -> Path:
         state: dict[str, Any] = {
             "mode": "autoregressive",
@@ -1572,6 +1760,7 @@ class FFAutoregressiveTrainer:
             "phase1_steps": self.phase1_steps,
             "gate_init_bias": self.gate_init_bias,
             "freeze_embeddings_phase2": self.freeze_embeddings_phase2,
+            "redundancy_reduction_weight": self.redundancy_reduction_weight,
             "current_phase": self._current_phase,
             "gate_state": (
                 self.gates.state_dict() if self.gates is not None else None
@@ -1735,6 +1924,11 @@ class FFAutoregressiveTrainer:
 
             total_loss = candidate_loss_total + (self.goodness_aux_weight * goodness_aux_loss_total)
 
+            rr_loss = torch.tensor(0.0, device=self.device)
+            if self.redundancy_reduction_weight > 0.0 and n_blocks > 1:
+                rr_loss = self._redundancy_reduction_loss(block_outputs, x)
+                total_loss = total_loss + self.redundancy_reduction_weight * rr_loss
+
             if not bool(torch.isfinite(total_loss).item()):
                 raise RuntimeError(f"NaN/Inf detected in loss at step={step}")
 
@@ -1840,6 +2034,8 @@ class FFAutoregressiveTrainer:
                 if self.staged_training:
                     phase_tag = f"phase={self._current_phase} "
 
+                rr_msg = f"rr_loss={rr_loss.item():.4f} " if self.redundancy_reduction_weight > 0.0 else ""
+
                 if not should_eval:
                     print(
                         f"[ff-ar step {step}] {phase_tag}loss={total_loss.item():.4f} temp={self.temperature:.3f} "
@@ -1847,6 +2043,7 @@ class FFAutoregressiveTrainer:
                         f"cand_unw={candidate_loss_unweighted_total.item():.4f} "
                         f"cand_final={candidate_loss_final_block.item():.4f} "
                         f"good_aux={goodness_aux_loss_total.item():.4f} "
+                        f"{rr_msg}"
                         f"steps_per_sec={steps_per_sec:.2f} "
                         f"(eval skipped) {block_msg}"
                     )
@@ -1892,6 +2089,17 @@ class FFAutoregressiveTrainer:
                     self.history["test_goodness_candidate_accuracy"].append(test_good.candidate_ranking_accuracy)
                     self.history["eval_train_size"].append(len(train_eval))
                     self.history["eval_test_size"].append(len(test_eval))
+                    self.history["redundancy_loss"].append(float(rr_loss.item()))
+
+                    train_probes = self._evaluate_block_probes(train_eval)
+                    test_probes = self._evaluate_block_probes(test_eval)
+                    for k in range(len(self.model.blocks)):
+                        self.history["block_probe_token_acc_train"][k].append(train_probes["block_probe_token_acc"][k])
+                        self.history["block_probe_token_acc_test"][k].append(test_probes["block_probe_token_acc"][k])
+                        self.history["block_probe_exact_train"][k].append(train_probes["block_probe_exact"][k])
+                        self.history["block_probe_exact_test"][k].append(test_probes["block_probe_exact"][k])
+
+                    probe_msg = "blk_probe_test=[" + ",".join(f"{v:.2f}" for v in test_probes["block_probe_exact"]) + "]"
 
                     print(
                         f"[ff-ar step {step}] {phase_tag}loss={total_loss.item():.4f} temp={self.temperature:.3f} "
@@ -1899,11 +2107,13 @@ class FFAutoregressiveTrainer:
                         f"cand_unw={candidate_loss_unweighted_total.item():.4f} "
                         f"cand_final={candidate_loss_final_block.item():.4f} "
                         f"good_aux={goodness_aux_loss_total.item():.4f} "
+                        f"{rr_msg}"
                         f"steps_per_sec={steps_per_sec:.2f} "
                         f"train_exact={train_logits.sequence_exact_match:.3f} "
                         f"test_exact={test_logits.sequence_exact_match:.3f} "
                         f"train_good_rank={train_good.candidate_ranking_accuracy:.3f} "
                         f"test_good_rank={test_good.candidate_ranking_accuracy:.3f} "
+                        f"{probe_msg} "
                         f"eval_train={len(train_eval)} eval_test={len(test_eval)} {block_msg}"
                     )
 
