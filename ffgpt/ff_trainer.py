@@ -84,6 +84,7 @@ class FFDiscriminativeTrainer:
         layerwise_train_single_block: bool = False,
         layerwise_phase_steps: list[int] | None = None,
         redundancy_reduction_weight: float = 0.0,
+        boost_reweight_alpha: float = 0.0,
         device: str = "cpu",
         seed: int = 42,
         run_tag: str | None = None,
@@ -138,6 +139,7 @@ class FFDiscriminativeTrainer:
         self.goodness_block_weights_raw = None if goodness_block_weights is None else [float(x) for x in goodness_block_weights]
         self.layerwise_train_single_block = bool(layerwise_train_single_block)
         self.redundancy_reduction_weight = float(redundancy_reduction_weight)
+        self.boost_reweight_alpha = float(boost_reweight_alpha)
         self.device = torch.device(device)
         self.seed = seed
         self.run_tag = run_tag
@@ -430,6 +432,32 @@ class FFDiscriminativeTrainer:
         flat_logits = torch.stack(selected_logits, dim=0)
         flat_targets = torch.stack(selected_targets, dim=0)
         return F.cross_entropy(flat_logits, flat_targets)
+
+    def _answer_token_ce_loss_per_example(
+        self, block_hidden: torch.Tensor, x_tokens: torch.Tensor, y_tokens: torch.Tensor,
+    ) -> torch.Tensor:
+        """Per-example CE on answer-generation positions → [B]."""
+        logits = torch.matmul(block_hidden, self.model.embedding_weight.detach().T)
+        batch_size, seq_len, _ = logits.shape
+        per_example_losses: list[torch.Tensor] = []
+
+        for batch_idx in range(batch_size):
+            eq_positions = (x_tokens[batch_idx] == self.vocab.equals_id).nonzero(as_tuple=False)
+            if eq_positions.numel() == 0:
+                per_example_losses.append(torch.tensor(0.0, device=self.device))
+                continue
+            eq_pos = int(eq_positions[0].item())
+            pos_logits = logits[batch_idx, eq_pos:]
+            pos_targets = y_tokens[batch_idx, eq_pos:]
+            ce = F.cross_entropy(pos_logits, pos_targets, reduction="none")
+            per_example_losses.append(ce.mean())
+
+        return torch.stack(per_example_losses, dim=0)
+
+    def _boost_weights(self, prev_loss: torch.Tensor) -> torch.Tensor:
+        """Compute boosting-style reweighting from previous block's per-example loss."""
+        w = 1.0 + self.boost_reweight_alpha * prev_loss.detach()
+        return w / w.mean()
 
     def _answer_token_kl_loss(
         self,
@@ -834,6 +862,7 @@ class FFDiscriminativeTrainer:
             "layerwise_train_single_block": self.layerwise_train_single_block,
             "layerwise_phase_steps": self.layerwise_phase_steps,
             "redundancy_reduction_weight": self.redundancy_reduction_weight,
+            "boost_reweight_alpha": self.boost_reweight_alpha,
             "rng_states": capture_rng_states(),
         }
         path = self.checkpoint_dir / f"{self.checkpoint_prefix}_step{step}.pt"
@@ -976,17 +1005,33 @@ class FFDiscriminativeTrainer:
                 if self.logit_aux_weight > 0.0:
                     if self.use_per_block_logit_aux:
                         aux_terms: list[torch.Tensor] = []
+                        prev_block_loss_per_ex: torch.Tensor | None = None
                         for block_idx, block_hidden in enumerate(pos_block_outputs_causal):
                             if self.layerwise_train_single_block and block_idx not in active_block_set:
                                 continue
                             weight = self._logit_aux_block_weight(block_idx, n_blocks)
                             if weight <= 0.0:
+                                if self.boost_reweight_alpha > 0.0:
+                                    prev_block_loss_per_ex = self._answer_token_ce_loss_per_example(
+                                        block_hidden=block_hidden, x_tokens=x_pos, y_tokens=y_pos,
+                                    ).detach()
                                 continue
-                            ce_k = self._answer_token_ce_loss(
-                                block_hidden=block_hidden,
-                                x_tokens=x_pos,
-                                y_tokens=y_pos,
-                            )
+                            if self.boost_reweight_alpha > 0.0:
+                                ce_k_per_ex = self._answer_token_ce_loss_per_example(
+                                    block_hidden=block_hidden, x_tokens=x_pos, y_tokens=y_pos,
+                                )
+                                if prev_block_loss_per_ex is not None:
+                                    boost_w = self._boost_weights(prev_block_loss_per_ex)
+                                    ce_k = (ce_k_per_ex * boost_w).mean()
+                                else:
+                                    ce_k = ce_k_per_ex.mean()
+                                prev_block_loss_per_ex = ce_k_per_ex.detach()
+                            else:
+                                ce_k = self._answer_token_ce_loss(
+                                    block_hidden=block_hidden,
+                                    x_tokens=x_pos,
+                                    y_tokens=y_pos,
+                                )
                             aux_terms.append(ce_k * weight)
                         if aux_terms:
                             logit_aux_loss = torch.stack(aux_terms, dim=0).sum()
@@ -1290,6 +1335,7 @@ class FFAutoregressiveTrainer:
         gate_init_bias: float = -5.0,
         freeze_embeddings_phase2: bool = True,
         redundancy_reduction_weight: float = 0.0,
+        boost_reweight_alpha: float = 0.0,
         device: str = "cpu",
         seed: int = 42,
         run_tag: str | None = None,
@@ -1314,6 +1360,7 @@ class FFAutoregressiveTrainer:
         self.gate_init_bias = float(gate_init_bias)
         self.freeze_embeddings_phase2 = bool(freeze_embeddings_phase2)
         self.redundancy_reduction_weight = float(redundancy_reduction_weight)
+        self.boost_reweight_alpha = float(boost_reweight_alpha)
         if self.staged_training and self.phase1_steps is None:
             raise ValueError("phase1_steps is required when staged_training=True")
         if self.staged_training and self.phase1_steps is not None and self.phase1_steps > self.num_steps:
@@ -1521,6 +1568,48 @@ class FFAutoregressiveTrainer:
         candidate_logits = torch.stack(candidate_rows, dim=0)
         candidate_targets = torch.zeros(candidate_logits.shape[0], dtype=torch.long, device=self.device)
         return candidate_set_ce_loss(candidate_logits, candidate_targets, temperature=self.temperature)
+
+    def _candidate_loss_per_example(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Per-example CE loss → [B]. Same logic as _candidate_loss but reduction='none', then mean over T."""
+        B, T, V = logits.shape
+        vocab_size = V
+
+        if self.k_negatives >= vocab_size - 1:
+            per_token = F.cross_entropy(
+                (logits / self.temperature).reshape(-1, vocab_size),
+                targets.reshape(-1),
+                reduction="none",
+            )
+            return per_token.reshape(B, T).mean(dim=1)
+
+        flat_logits = logits.reshape(-1, vocab_size)
+        flat_targets = targets.reshape(-1)
+        candidate_rows: list[torch.Tensor] = []
+
+        for idx in range(flat_logits.shape[0]):
+            target = int(flat_targets[idx].item())
+            negatives = sample_negatives(
+                correct_token=target,
+                vocab_size=vocab_size,
+                k=self.k_negatives,
+                rng=self.rng,
+            )
+            candidate_ids = [target, *negatives]
+            candidate_rows.append(flat_logits[idx, candidate_ids])
+
+        candidate_logits_stacked = torch.stack(candidate_rows, dim=0)
+        candidate_targets_zeros = torch.zeros(candidate_logits_stacked.shape[0], dtype=torch.long, device=self.device)
+        per_token = F.cross_entropy(
+            candidate_logits_stacked / self.temperature,
+            candidate_targets_zeros,
+            reduction="none",
+        )
+        return per_token.reshape(B, T).mean(dim=1)
+
+    def _boost_weights(self, prev_loss: torch.Tensor) -> torch.Tensor:
+        """Compute boosting-style reweighting from previous block's per-example loss."""
+        w = 1.0 + self.boost_reweight_alpha * prev_loss.detach()
+        return w / w.mean()
 
     def _score_candidates_goodness(
         self,
@@ -1761,6 +1850,7 @@ class FFAutoregressiveTrainer:
             "gate_init_bias": self.gate_init_bias,
             "freeze_embeddings_phase2": self.freeze_embeddings_phase2,
             "redundancy_reduction_weight": self.redundancy_reduction_weight,
+            "boost_reweight_alpha": self.boost_reweight_alpha,
             "current_phase": self._current_phase,
             "gate_state": (
                 self.gates.state_dict() if self.gates is not None else None
@@ -1842,17 +1932,35 @@ class FFAutoregressiveTrainer:
                 final_hidden = block_outputs[-1]
                 final_block_idx = len(self.model.blocks) - 1
                 logits = self._project_block_logits(final_block_idx, final_hidden)
-                candidate_loss_total = self._candidate_loss(logits, y)
+                if self.boost_reweight_alpha > 0.0:
+                    with torch.no_grad():
+                        b0_logits = self._project_block_logits(0, block_outputs[0])
+                        b0_loss_per_ex = self._candidate_loss_per_example(b0_logits, y)
+                    weights = self._boost_weights(b0_loss_per_ex)
+                    final_loss_per_ex = self._candidate_loss_per_example(logits, y)
+                    candidate_loss_total = (final_loss_per_ex * weights).mean()
+                else:
+                    candidate_loss_total = self._candidate_loss(logits, y)
                 candidate_loss_unweighted_total = candidate_loss_total
                 candidate_loss_final_block = candidate_loss_total
                 candidate_loss_nonfinal_mean = torch.tensor(float("nan"), device=self.device)
             else:
                 candidate_block_losses_unweighted: list[torch.Tensor] = []
                 candidate_block_losses_weighted: list[torch.Tensor] = []
+                prev_block_loss_per_ex: torch.Tensor | None = None
                 for block_idx, block_hidden in enumerate(block_outputs):
                     logits = self._project_block_logits(block_idx, block_hidden)
-                    loss_k = self._candidate_loss(logits, y)
                     weight_k = self._block_loss_weight(block_idx, n_blocks)
+                    if self.boost_reweight_alpha > 0.0:
+                        loss_k_per_ex = self._candidate_loss_per_example(logits, y)
+                        if prev_block_loss_per_ex is not None:
+                            boost_w = self._boost_weights(prev_block_loss_per_ex)
+                            loss_k = (loss_k_per_ex * boost_w).mean()
+                        else:
+                            loss_k = loss_k_per_ex.mean()
+                        prev_block_loss_per_ex = loss_k_per_ex.detach()
+                    else:
+                        loss_k = self._candidate_loss(logits, y)
                     candidate_block_losses_unweighted.append(loss_k)
                     candidate_block_losses_weighted.append(loss_k * weight_k)
 

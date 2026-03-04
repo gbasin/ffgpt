@@ -519,3 +519,27 @@
   - No accuracy improvement from rr_loss. Decorrelated representations ≠ complementary functions.
 - **Diagnosis**: The rr_loss forces different *representations* but not different *functions*. With detach, each block still receives the same CE loss target (predict the full answer). Cosine decorrelation doesn't change what's optimal — it just rotates block 1's solution to an equally-valid but orthogonal basis. The blocks are decorrelated in representation space but redundant in function space.
 - **Implication**: Addressing redundancy requires a *loss-level* intervention, not a representation-level one. Candidates: (1) residual-target loss where block k+1 is trained to correct block k's errors rather than predict the full answer, (2) boosting-style reweighting where block k+1's loss upweights examples block k got wrong.
+
+### Entry 44
+- **Boosting-style reweighting** implemented as follow-up to entry 43's loss-level intervention idea.
+- **Mechanism**: For block k+1, compute block k's per-example CE loss (detached), then reweight: `w = 1 + alpha * prev_loss; w = w / w.mean()`. Examples block k got wrong (high CE) get higher weight in block k+1's loss.
+- Works in both modes:
+  - **Staged training** (entry 42): Phase 2 reweights gated output's loss by frozen block 0's per-example CE.
+  - **Non-staged**: Each block k+1's CE is reweighted by block k's per-example loss in the per-block loop.
+- Also implemented for discriminative trainer's per-block logit aux loop.
+- Controlled via `--boost-reweight-alpha` (default 0.0 = off).
+- **2-digit experiment** (coverage split, seed 42, n_blocks=2, staged, phase1=1000, total=2000, batch=128, eval_samples=200):
+
+  | Model | test_exact @ 2000 | block probe test |
+  |-------|-------------------|------------------|
+  | Vanilla backprop baseline | **0.920** | n/a |
+  | FF staged (alpha=0) | 0.235 | [0.05, 0.23] |
+  | FF staged (alpha=1) | 0.120 | [0.05, 0.12] |
+
+- **Observations**:
+  - Boost alpha=1 **hurts** — test_exact drops from 0.235 to 0.120. Block 1 probe also worse (0.12 vs 0.23).
+  - Phase 1 is identical (as expected — boost only affects phase 2 / non-first blocks).
+  - Block 0 only reaches ~5% test_exact by end of phase 1, so its per-example CE is high and undifferentiated across most examples. The reweighting provides no useful signal — it's noise rather than a selective focus mechanism.
+  - Vanilla backprop at 92% test_exact dominates all FF variants by a huge margin at this step count.
+- **Diagnosis**: Boost reweighting assumes the previous block is good at *most* examples and bad at *few*, creating a clear residual signal. Here block 0 is bad at nearly everything, so the weights are essentially random perturbations of uniform. This adds variance to the loss without information.
+- **Possible next steps**: (1) Try much lower alpha (0.1-0.3) for gentler reweighting. (2) Try longer phase 1 so block 0 actually learns something before reweighting kicks in. (3) The fundamental gap vs backprop (92% vs 23%) suggests the bottleneck is the FF architecture/training itself, not the redundancy problem.

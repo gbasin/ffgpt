@@ -103,6 +103,7 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated steps per block phase; length must equal n_blocks and sum must equal --steps.",
     )
     parser.add_argument("--redundancy-reduction-weight", type=float, default=0.0, help="Weight for redundancy reduction loss between adjacent blocks (0=off)")
+    parser.add_argument("--boost-reweight-alpha", type=float, default=0.0, help="Boosting-style reweighting alpha (0=off). Reweights later block losses by earlier block per-example CE.")
     return parser.parse_args()
 
 
@@ -248,6 +249,7 @@ def main() -> None:
         layerwise_train_single_block=args.layerwise_train_single_block,
         layerwise_phase_steps=layerwise_phase_steps,
         redundancy_reduction_weight=args.redundancy_reduction_weight,
+        boost_reweight_alpha=args.boost_reweight_alpha,
         device=args.device,
         seed=args.seed,
         run_tag=run_tag,

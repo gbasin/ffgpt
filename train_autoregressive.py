@@ -77,6 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gate-init-bias", type=float, default=-5.0, help="Initial bias for gate sigmoid (default: -5.0 => near-zero pass-through)")
     parser.add_argument("--no-freeze-embeddings-phase2", action="store_true", help="Do not freeze embeddings in phase 2 (default: freeze)")
     parser.add_argument("--redundancy-reduction-weight", type=float, default=0.0, help="Weight for redundancy reduction loss between adjacent blocks (0=off)")
+    parser.add_argument("--boost-reweight-alpha", type=float, default=0.0, help="Boosting-style reweighting alpha (0=off). Reweights later block losses by earlier block per-example CE.")
     return parser.parse_args()
 
 
@@ -185,6 +186,7 @@ def main() -> None:
         gate_init_bias=args.gate_init_bias,
         freeze_embeddings_phase2=not args.no_freeze_embeddings_phase2,
         redundancy_reduction_weight=args.redundancy_reduction_weight,
+        boost_reweight_alpha=args.boost_reweight_alpha,
         device=args.device,
         seed=args.seed,
         run_tag=run_tag,
