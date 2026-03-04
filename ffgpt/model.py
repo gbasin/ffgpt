@@ -115,6 +115,18 @@ class TransformerBlock(nn.Module):
         return x, goodness_activations
 
 
+class GatedResidualGate(nn.Module):
+    def __init__(self, d_model: int, init_bias: float = -5.0):
+        super().__init__()
+        self.gate_proj = nn.Linear(d_model, d_model)
+        nn.init.zeros_(self.gate_proj.weight)
+        nn.init.constant_(self.gate_proj.bias, init_bias)
+
+    def forward(self, block_input: torch.Tensor, block_delta: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        gate = torch.sigmoid(self.gate_proj(block_input))
+        return block_input + gate * block_delta, gate
+
+
 class FFTransformer(nn.Module):
     def __init__(self, config: TransformerConfig) -> None:
         super().__init__()
@@ -149,6 +161,8 @@ class FFTransformer(nn.Module):
         detach_between_blocks: bool = True,
         inter_block_norm: str = "none",
         inter_block_norm_eps: float = 1e-5,
+        gates: nn.ModuleList | None = None,
+        active_blocks: int | None = None,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         if pad_mask is None:
             pad_mask = torch.ones_like(tokens, dtype=torch.bool)
@@ -166,6 +180,8 @@ class FFTransformer(nn.Module):
         goodness_activations: list[torch.Tensor] = []
 
         for block_idx, block in enumerate(self.blocks):
+            if active_blocks is not None and block_idx >= active_blocks:
+                break
             if detach_between_blocks and block_idx > 0:
                 x = x.detach()
             if block_idx > 0 and norm_mode != "none":
@@ -175,7 +191,11 @@ class FFTransformer(nn.Module):
                     x = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + inter_block_norm_eps)
                 else:
                     x = x / x.norm(dim=-1, keepdim=True).clamp(min=inter_block_norm_eps)
+            block_input = x
             x, acts = block(x, pad_mask=pad_mask, causal=causal)
+            if gates is not None and block_idx > 0:
+                delta = x - block_input
+                x, _gate_vals = gates[block_idx - 1](block_input, delta)
             block_outputs.append(x)
             goodness_activations.append(acts)
 

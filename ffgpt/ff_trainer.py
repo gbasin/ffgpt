@@ -22,7 +22,7 @@ from .data import (
     sample_negatives,
 )
 from .goodness import candidate_set_ce_loss, ff_loss_bce, mean_goodness, update_threshold_ema
-from .model import FFTransformer
+from .model import FFTransformer, GatedResidualGate
 from .utils import build_checkpoint_prefix, capture_rng_states, save_checkpoint
 
 
@@ -1176,6 +1176,10 @@ class FFAutoregressiveTrainer:
         final_block_loss_weight: float = 1.0,
         nonfinal_block_loss_weight: float = 1.0,
         block_output_head_states: list[dict[str, Any]] | None = None,
+        staged_training: bool = False,
+        phase1_steps: int | None = None,
+        gate_init_bias: float = -5.0,
+        freeze_embeddings_phase2: bool = True,
         device: str = "cpu",
         seed: int = 42,
         run_tag: str | None = None,
@@ -1195,6 +1199,16 @@ class FFAutoregressiveTrainer:
         self.goodness_aux_weight = float(goodness_aux_weight)
         self.threshold_momentum = float(threshold_momentum)
         self.sequence_length = int(sequence_length) if sequence_length is not None else int(self.model.config.max_seq_len)
+        self.staged_training = bool(staged_training)
+        self.phase1_steps = int(phase1_steps) if phase1_steps is not None else None
+        self.gate_init_bias = float(gate_init_bias)
+        self.freeze_embeddings_phase2 = bool(freeze_embeddings_phase2)
+        if self.staged_training and self.phase1_steps is None:
+            raise ValueError("phase1_steps is required when staged_training=True")
+        if self.staged_training and self.phase1_steps is not None and self.phase1_steps > self.num_steps:
+            raise ValueError(
+                f"phase1_steps ({self.phase1_steps}) must be <= num_steps ({self.num_steps})"
+            )
         self.device = torch.device(device)
         self.seed = seed
         self.run_tag = run_tag
@@ -1277,6 +1291,11 @@ class FFAutoregressiveTrainer:
         self.best_loss = float("inf")
         self.plateau_steps = 0
         self.rng = random.Random(seed)
+
+        # Staged training state
+        self._current_phase = 1
+        self.gates: nn.ModuleList | None = None
+        self.gate_optimizer: torch.optim.Adam | None = None
 
         self.history: dict[str, Any] = {
             "step": [],
@@ -1429,7 +1448,10 @@ class FFAutoregressiveTrainer:
         for _ in range(self.max_answer_tokens):
             input_ids = torch.tensor([context], dtype=torch.long, device=self.device)
             pad_mask = input_ids != self.vocab.pad_id
-            block_outputs, _ = self.model(input_ids, pad_mask=pad_mask, causal=True, detach_between_blocks=True)
+            block_outputs, _ = self.model(
+                input_ids, pad_mask=pad_mask, causal=True, detach_between_blocks=True,
+                gates=self.gates,
+            )
             final_block_idx = len(block_outputs) - 1
             hidden = block_outputs[final_block_idx][:, -1, :]
             logits = self._project_block_logits(final_block_idx, hidden)[0]
@@ -1546,86 +1568,171 @@ class FFAutoregressiveTrainer:
                 if self.block_output_heads is not None
                 else None
             ),
+            "staged_training": self.staged_training,
+            "phase1_steps": self.phase1_steps,
+            "gate_init_bias": self.gate_init_bias,
+            "freeze_embeddings_phase2": self.freeze_embeddings_phase2,
+            "current_phase": self._current_phase,
+            "gate_state": (
+                self.gates.state_dict() if self.gates is not None else None
+            ),
+            "gate_optimizer_state": (
+                self.gate_optimizer.state_dict() if self.gate_optimizer is not None else None
+            ),
             "rng_states": capture_rng_states(),
         }
         path = self.checkpoint_dir / f"{self.checkpoint_prefix}_step{step}.pt"
         return save_checkpoint(path, state)
+
+    def _enter_phase2(self, step: int) -> None:
+        """Transition from phase 1 to phase 2 of staged training."""
+        self._current_phase = 2
+
+        # Freeze block 0
+        self.model.blocks[0].requires_grad_(False)
+
+        # Optionally freeze embeddings
+        if self.freeze_embeddings_phase2:
+            self.model.token_embedding.requires_grad_(False)
+            self.model.position_embedding.requires_grad_(False)
+
+        # Create gates (one per non-first block)
+        n_gates = len(self.model.blocks) - 1
+        self.gates = nn.ModuleList(
+            [GatedResidualGate(self.model.config.d_model, self.gate_init_bias) for _ in range(n_gates)]
+        ).to(self.device)
+
+        self.gate_optimizer = torch.optim.Adam(self.gates.parameters(), lr=self.lr)
+
+        # Reset plateau/loss tracking for phase 2
+        self.prev_loss = None
+        self.loss_increase_streak = 0
+        self.best_loss = float("inf")
+        self.plateau_steps = 0
+
+        frozen_emb = "frozen" if self.freeze_embeddings_phase2 else "unfrozen"
+        print(
+            f"[staged] phase 2 activated at step={step}: "
+            f"block 0 frozen, embeddings {frozen_emb}, "
+            f"{n_gates} gate(s) created (init_bias={self.gate_init_bias})"
+        )
 
     def train(self, log_every: int = 100) -> dict[str, Any]:
         self.model.train()
         start_time = time.perf_counter()
 
         for step in range(1, self.num_steps + 1):
+            # Phase transition check
+            if (
+                self.staged_training
+                and self._current_phase == 1
+                and self.phase1_steps is not None
+                and step == self.phase1_steps + 1
+            ):
+                self._enter_phase2(step)
+
+            in_phase1 = self.staged_training and self._current_phase == 1
+            in_phase2 = self.staged_training and self._current_phase == 2
+
             batch_problems = self._sample_problem_batch()
             full_tokens, x, y = self._build_autoregressive_batch(batch_problems)
             x_mask = x != self.vocab.pad_id
 
-            block_outputs, _ = self.model(x, pad_mask=x_mask, causal=True, detach_between_blocks=True)
+            # Phase 1: only run block 0; Phase 2: run all blocks with gates
+            active_blocks = 1 if in_phase1 else None
+            gates_for_forward = self.gates if in_phase2 else None
+
+            block_outputs, _ = self.model(
+                x, pad_mask=x_mask, causal=True, detach_between_blocks=True,
+                active_blocks=active_blocks, gates=gates_for_forward,
+            )
             n_blocks = len(block_outputs)
 
-            candidate_block_losses_unweighted: list[torch.Tensor] = []
-            candidate_block_losses_weighted: list[torch.Tensor] = []
-            for block_idx, block_hidden in enumerate(block_outputs):
-                logits = self._project_block_logits(block_idx, block_hidden)
-                loss_k = self._candidate_loss(logits, y)
-                weight_k = self._block_loss_weight(block_idx, n_blocks)
-                candidate_block_losses_unweighted.append(loss_k)
-                candidate_block_losses_weighted.append(loss_k * weight_k)
-
-            candidate_loss_unweighted_total = sum(candidate_block_losses_unweighted)
-            candidate_loss_total = sum(candidate_block_losses_weighted)
-            candidate_loss_final_block = candidate_block_losses_unweighted[-1]
-            if n_blocks > 1:
-                candidate_loss_nonfinal_mean = torch.stack(candidate_block_losses_unweighted[:-1], dim=0).mean()
-            else:
+            if in_phase2:
+                # Phase 2: CE loss only on final (gated) output
+                final_hidden = block_outputs[-1]
+                final_block_idx = len(self.model.blocks) - 1
+                logits = self._project_block_logits(final_block_idx, final_hidden)
+                candidate_loss_total = self._candidate_loss(logits, y)
+                candidate_loss_unweighted_total = candidate_loss_total
+                candidate_loss_final_block = candidate_loss_total
                 candidate_loss_nonfinal_mean = torch.tensor(float("nan"), device=self.device)
+            else:
+                candidate_block_losses_unweighted: list[torch.Tensor] = []
+                candidate_block_losses_weighted: list[torch.Tensor] = []
+                for block_idx, block_hidden in enumerate(block_outputs):
+                    logits = self._project_block_logits(block_idx, block_hidden)
+                    loss_k = self._candidate_loss(logits, y)
+                    weight_k = self._block_loss_weight(block_idx, n_blocks)
+                    candidate_block_losses_unweighted.append(loss_k)
+                    candidate_block_losses_weighted.append(loss_k * weight_k)
 
-            pos_mask = full_tokens != self.vocab.pad_id
-            neg_tokens = self._build_negative_full_batch(batch_problems)
-            neg_mask = neg_tokens != self.vocab.pad_id
-            _, pos_acts = self.model(full_tokens, pad_mask=pos_mask, causal=True, detach_between_blocks=True)
-            _, neg_acts = self.model(neg_tokens, pad_mask=neg_mask, causal=True, detach_between_blocks=True)
+                candidate_loss_unweighted_total = sum(candidate_block_losses_unweighted)
+                candidate_loss_total = sum(candidate_block_losses_weighted)
+                candidate_loss_final_block = candidate_block_losses_unweighted[-1]
+                if n_blocks > 1:
+                    candidate_loss_nonfinal_mean = torch.stack(candidate_block_losses_unweighted[:-1], dim=0).mean()
+                else:
+                    candidate_loss_nonfinal_mean = torch.tensor(float("nan"), device=self.device)
 
-            goodness_block_losses: list[torch.Tensor] = []
-            block_stats: list[dict[str, float]] = []
-            for block_idx, (pos_block_acts, neg_block_acts) in enumerate(zip(pos_acts, neg_acts)):
-                g_pos = mean_goodness(pos_block_acts, pos_mask)
-                g_neg = mean_goodness(neg_block_acts, neg_mask)
-
-                self.thresholds[block_idx] = update_threshold_ema(
-                    g_pos=g_pos,
-                    g_neg=g_neg,
-                    current_threshold=self.thresholds[block_idx],
-                    momentum=self.threshold_momentum,
+            # Goodness aux — skip entirely in phase 2 (CE only)
+            if in_phase2:
+                goodness_aux_loss_total = torch.tensor(0.0, device=self.device)
+                block_stats: list[dict[str, float]] = []
+            else:
+                pos_mask = full_tokens != self.vocab.pad_id
+                neg_tokens = self._build_negative_full_batch(batch_problems)
+                neg_mask = neg_tokens != self.vocab.pad_id
+                _, pos_acts = self.model(
+                    full_tokens, pad_mask=pos_mask, causal=True, detach_between_blocks=True,
+                    active_blocks=active_blocks,
                 )
-                threshold = self.thresholds[block_idx]
-                assert threshold is not None
-
-                ff_loss_k = ff_loss_bce(g_pos, g_neg, threshold)
-                goodness_block_losses.append(ff_loss_k)
-
-                g_pos_mean = float(g_pos.mean().item())
-                g_neg_mean = float(g_neg.mean().item())
-                separation = g_pos_mean - g_neg_mean
-                separation_ratio = separation / (abs(g_neg_mean) + 1e-8)
-                threshold_value = float(threshold.item())
-                block_accuracy = (
-                    float((g_pos > threshold).float().mean().item())
-                    + float((g_neg <= threshold).float().mean().item())
-                ) * 0.5
-
-                block_stats.append(
-                    {
-                        "g_pos": g_pos_mean,
-                        "g_neg": g_neg_mean,
-                        "threshold": threshold_value,
-                        "separation": separation,
-                        "separation_ratio": separation_ratio,
-                        "accuracy": block_accuracy,
-                    }
+                _, neg_acts = self.model(
+                    neg_tokens, pad_mask=neg_mask, causal=True, detach_between_blocks=True,
+                    active_blocks=active_blocks,
                 )
 
-            goodness_aux_loss_total = sum(goodness_block_losses)
+                goodness_block_losses: list[torch.Tensor] = []
+                block_stats = []
+                for block_idx, (pos_block_acts, neg_block_acts) in enumerate(zip(pos_acts, neg_acts)):
+                    g_pos = mean_goodness(pos_block_acts, pos_mask)
+                    g_neg = mean_goodness(neg_block_acts, neg_mask)
+
+                    self.thresholds[block_idx] = update_threshold_ema(
+                        g_pos=g_pos,
+                        g_neg=g_neg,
+                        current_threshold=self.thresholds[block_idx],
+                        momentum=self.threshold_momentum,
+                    )
+                    threshold = self.thresholds[block_idx]
+                    assert threshold is not None
+
+                    ff_loss_k = ff_loss_bce(g_pos, g_neg, threshold)
+                    goodness_block_losses.append(ff_loss_k)
+
+                    g_pos_mean = float(g_pos.mean().item())
+                    g_neg_mean = float(g_neg.mean().item())
+                    separation = g_pos_mean - g_neg_mean
+                    separation_ratio = separation / (abs(g_neg_mean) + 1e-8)
+                    threshold_value = float(threshold.item())
+                    block_accuracy = (
+                        float((g_pos > threshold).float().mean().item())
+                        + float((g_neg <= threshold).float().mean().item())
+                    ) * 0.5
+
+                    block_stats.append(
+                        {
+                            "g_pos": g_pos_mean,
+                            "g_neg": g_neg_mean,
+                            "threshold": threshold_value,
+                            "separation": separation,
+                            "separation_ratio": separation_ratio,
+                            "accuracy": block_accuracy,
+                        }
+                    )
+
+                goodness_aux_loss_total = sum(goodness_block_losses)
+
             total_loss = candidate_loss_total + (self.goodness_aux_weight * goodness_aux_loss_total)
 
             if not bool(torch.isfinite(total_loss).item()):
@@ -1670,15 +1777,44 @@ class FFAutoregressiveTrainer:
                 self.plateau_steps = 0
                 print(f"[info] reducing temperature to {self.temperature:.4f} at step={step}")
 
-            for optimizer in self.block_optimizers:
-                optimizer.zero_grad(set_to_none=True)
-            self.embedding_optimizer.zero_grad(set_to_none=True)
+            # Conditional optimizer stepping
+            if in_phase2:
+                # Phase 2: only step block 1+ optimizers and gate optimizer
+                for bidx in range(1, len(self.block_optimizers)):
+                    self.block_optimizers[bidx].zero_grad(set_to_none=True)
+                if self.gate_optimizer is not None:
+                    self.gate_optimizer.zero_grad(set_to_none=True)
+                if not self.freeze_embeddings_phase2:
+                    self.embedding_optimizer.zero_grad(set_to_none=True)
 
-            total_loss.backward()
+                total_loss.backward()
 
-            for optimizer in self.block_optimizers:
-                optimizer.step()
-            self.embedding_optimizer.step()
+                for bidx in range(1, len(self.block_optimizers)):
+                    self.block_optimizers[bidx].step()
+                if self.gate_optimizer is not None:
+                    self.gate_optimizer.step()
+                if not self.freeze_embeddings_phase2:
+                    self.embedding_optimizer.step()
+            elif in_phase1:
+                # Phase 1: only step block 0 optimizer and embedding optimizer
+                self.block_optimizers[0].zero_grad(set_to_none=True)
+                self.embedding_optimizer.zero_grad(set_to_none=True)
+
+                total_loss.backward()
+
+                self.block_optimizers[0].step()
+                self.embedding_optimizer.step()
+            else:
+                # Non-staged: step all optimizers
+                for optimizer in self.block_optimizers:
+                    optimizer.zero_grad(set_to_none=True)
+                self.embedding_optimizer.zero_grad(set_to_none=True)
+
+                total_loss.backward()
+
+                for optimizer in self.block_optimizers:
+                    optimizer.step()
+                self.embedding_optimizer.step()
 
             if step % log_every == 0 or step == 1 or step == self.num_steps:
                 should_eval = (
@@ -1700,9 +1836,13 @@ class FFAutoregressiveTrainer:
                     ]
                 )
 
+                phase_tag = ""
+                if self.staged_training:
+                    phase_tag = f"phase={self._current_phase} "
+
                 if not should_eval:
                     print(
-                        f"[ff-ar step {step}] loss={total_loss.item():.4f} temp={self.temperature:.3f} "
+                        f"[ff-ar step {step}] {phase_tag}loss={total_loss.item():.4f} temp={self.temperature:.3f} "
                         f"cand={candidate_loss_total.item():.4f} "
                         f"cand_unw={candidate_loss_unweighted_total.item():.4f} "
                         f"cand_final={candidate_loss_final_block.item():.4f} "
@@ -1754,7 +1894,7 @@ class FFAutoregressiveTrainer:
                     self.history["eval_test_size"].append(len(test_eval))
 
                     print(
-                        f"[ff-ar step {step}] loss={total_loss.item():.4f} temp={self.temperature:.3f} "
+                        f"[ff-ar step {step}] {phase_tag}loss={total_loss.item():.4f} temp={self.temperature:.3f} "
                         f"cand={candidate_loss_total.item():.4f} "
                         f"cand_unw={candidate_loss_unweighted_total.item():.4f} "
                         f"cand_final={candidate_loss_final_block.item():.4f} "

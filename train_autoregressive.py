@@ -72,6 +72,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--goodness-aux-weight", type=float, default=1.0)
     parser.add_argument("--threshold-momentum", type=float, default=0.9)
     parser.add_argument("--max-full-candidate-answers", type=int, default=2048)
+    parser.add_argument("--staged-training", action="store_true", help="Enable two-phase gated staged training")
+    parser.add_argument("--phase1-steps", type=int, default=None, help="Steps for phase 1 (block 0 solo); required if --staged-training")
+    parser.add_argument("--gate-init-bias", type=float, default=-5.0, help="Initial bias for gate sigmoid (default: -5.0 => near-zero pass-through)")
+    parser.add_argument("--no-freeze-embeddings-phase2", action="store_true", help="Do not freeze embeddings in phase 2 (default: freeze)")
     return parser.parse_args()
 
 
@@ -175,6 +179,10 @@ def main() -> None:
         use_per_block_output_heads=args.use_per_block_output_heads,
         final_block_loss_weight=args.final_block_loss_weight,
         nonfinal_block_loss_weight=args.nonfinal_block_loss_weight,
+        staged_training=args.staged_training,
+        phase1_steps=args.phase1_steps,
+        gate_init_bias=args.gate_init_bias,
+        freeze_embeddings_phase2=not args.no_freeze_embeddings_phase2,
         device=args.device,
         seed=args.seed,
         run_tag=run_tag,

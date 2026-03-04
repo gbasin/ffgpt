@@ -457,3 +457,41 @@
   - **NLP FF transformer reports** are limited and generally small-scale; there is not strong evidence yet for robust autoregressive generation matching backprop.
 - Practical implication for this repo:
   - Our observed AR failure is consistent with the literature gap: local FF objectives are currently much better validated for classification than for deep autoregressive carry computation.
+
+### Entry 42
+- **Gated staged FF-AR training**: implemented two-phase approach to fix 2-block degradation (entry 34: block 1 actively hurts block 0).
+  - Phase 1: train block 0 solo (CE only, `goodness_aux_weight=0.0`) until saturated.
+  - Phase 2: freeze block 0 + embeddings, add block 1 with a learned `GatedResidualGate` (sigmoid gate, init_bias=-5.0 → ~0.007 pass-through at start). Train block 1 + gate with CE on gated output.
+  - `active_blocks` param skips block 1's forward pass in phase 1 (saves ~40% compute).
+  - Not "FF" in phase 2 — it's supervised finetuning of a gated residual on a frozen encoder. FF aspect is confined to phase 1's local block training + inter-block detach.
+- Files changed: `model.py` (GatedResidualGate, FFTransformer.forward gains `gates`/`active_blocks` params), `ff_trainer.py` (staged constructor params, `_enter_phase2()`, conditional train loop, inference with gates, checkpoint save/load), `train_autoregressive.py` (CLI flags), `analyze_gate.py` (new gate visualization script).
+- **1-digit sanity** (coverage split, seed 42, n_blocks=2, steps=2000):
+  - Phase 1 only (phase1_steps=2000): train_exact=0.988, test_exact=0.350
+  - Staged (phase1=1000, phase2=1000): train_exact=1.000, test_exact=0.250
+  - Phase 2 improved train to 1.0 but test dropped slightly (n=20 test set, high variance).
+- **3-digit scaling** (random split, samples=20000, train=16000, test=4000, split_seed=42, n_blocks=2, steps=8000, phase1_steps=4000):
+  - Run tag: `gated_3d_staged_t4k`.
+  - Phase 1 (block 0 solo): train_exact stayed 0.000–0.005 through 4000 steps. CE loss plateaued ~1.58, temperature collapsed to 0.25 by step 3617.
+  - Phase 2 (block 1 + gate): loss dropped from 1.58 → ~1.36. Final test_exact=0.030, test_token_acc=0.567.
+  - Per-position test token accuracy: `{0: 0.940, 1: 0.585, 2: 0.195, 3: 0.549}`.
+  - Comparison to entry 36 (same data/split/model config d_model=64, n_heads=2, n_blocks=2, mlp_hidden=256):
+
+    | Metric | Baseline | Joint FF-AR | Gated Staged |
+    |--------|----------|-------------|--------------|
+    | test_exact | 0.758 | 0.010 | 0.030 |
+    | test_token_acc | ~0.927 | ~0.494 | 0.567 |
+    | pos_0 (thousands) | 0.963 | 0.820 | 0.940 |
+    | pos_1 (hundreds) | 0.888 | 0.501 | 0.585 |
+    | pos_2 (tens) | 0.864 | 0.103 | 0.195 |
+    | pos_3 (ones) | 0.992 | 0.551 | 0.549 |
+
+- **Embedding freeze ablation**: frozen vs unfrozen embeddings in phase 2 produced identical results (losses matched to 4 decimal places). Embedding gradients through block 1's output projection don't help at this stage.
+- **Gate analysis** (3-digit checkpoint):
+  - Gate values very low overall (0.01–0.05), as expected from init_bias=-5.0.
+  - Gate opens more at later answer positions (0.055 at last position vs 0.015 at earlier positions).
+  - Carry vs no-carry differentiation is minimal — the gate hasn't learned to selectively open for carry digits.
+- **Interpretation**:
+  - Gated staging prevents block 1 from degrading block 0 (the original entry 34 problem is solved — no degrade).
+  - Gated staged is 3× better than joint FF-AR on exact match (0.030 vs 0.010) and improves token accuracy across positions.
+  - But still far behind baseline (0.030 vs 0.758 exact). The fundamental bottleneck is phase 1: a single FF block with local learning can't learn 3-digit addition (0% exact at 4k steps). Phase 2 then starts from a weak base.
+  - The carry-heavy tens position (pos_2) remains the main failure mode at 0.195 vs baseline 0.864.
